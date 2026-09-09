@@ -58,8 +58,19 @@ function requireHarness(id: string): Harness {
 /**
  * Replays a recorded fixture through a real `ScreenModel` + `StatusEngine`,
  * then advances the injected clock past `idleMs` so the detection pass runs.
+ *
+ * `totalBusyMs` is the wall-clock duration the capture actually spanned, spread
+ * evenly across its chunks. The `.cast` format stores bytes only, not timing, so
+ * without it every replay looks instantaneous and no fixture could ever reach
+ * `done` (which requires `finishedAfterBusyMs` of busy time). Spreading by total
+ * duration rather than per chunk matters: a burst of 300 tiny paint chunks still
+ * only took two seconds.
  */
-async function replayFixture(name: string, harness: Harness): Promise<StatusSnapshot> {
+async function replayFixture(
+  name: string,
+  harness: Harness,
+  totalBusyMs = 0,
+): Promise<StatusSnapshot> {
   const clock = new FakeClock();
   const engine = new StatusEngine(harness, {
     now: clock.now,
@@ -67,8 +78,12 @@ async function replayFixture(name: string, harness: Harness): Promise<StatusSnap
     clearTimeout: clock.clearTimeout,
   });
   try {
-    for (const chunk of loadFixture(name)) {
+    const chunks = loadFixture(name);
+    // Capped below idleMs, or the idle pass would fire mid-stream.
+    const step = chunks.length > 1 ? Math.min(totalBusyMs / (chunks.length - 1), harness.idleMs - 1) : 0;
+    for (const chunk of chunks) {
       await engine.onData(chunk);
+      if (step > 0) clock.advance(step);
     }
     clock.advance(harness.idleMs + 1);
     return engine.current;
@@ -77,12 +92,80 @@ async function replayFixture(name: string, harness: Harness): Promise<StatusSnap
   }
 }
 
-describe('detection against recorded fixtures', () => {
+describe('detection against fixtures captured from real CLIs', () => {
+  /**
+   * These were captured with `server/scripts/capture.ts` against opencode
+   * 1.18.30 and pi 0.85.1. Both auto-approve tool calls, so neither has a
+   * permission prompt: their only modal blocked state is a selection widget.
+   */
+  it.each<[string, string, SessionStatus, WaitKind | undefined]>([
+    ['opencode-menu', 'opencode', 'waiting_input', 'menu'],
+    ['pi-menu', 'pi', 'waiting_input', 'menu'],
+  ])('%s replayed against %s yields %s', async (fixture, harnessId, status, waitKind) => {
+    const snapshot = await replayFixture(fixture, requireHarness(harnessId));
+    expect(snapshot.status).toBe(status);
+    expect(snapshot.waitKind).toBe(waitKind);
+  });
+
+  /**
+   * Negative fixtures. A false-positive amber is worse than a miss: it trains
+   * you to ignore the one colour that means "act now". Every rule above ships
+   * with a screen it must NOT fire on.
+   */
+  it.each<[string, string]>([
+    ['opencode-idle', 'opencode'],
+    ['pi-idle', 'pi'],
+    ['opencode-after-run', 'opencode'],
+    ['pi-after-run', 'pi'],
+    ['opencode-question', 'opencode'],
+  ])('%s must not be reported as waiting', async (fixture, harnessId) => {
+    const snapshot = await replayFixture(fixture, requireHarness(harnessId));
+    expect(snapshot.status).not.toBe('waiting_input');
+    expect(snapshot.matchedRule).toBeUndefined();
+  });
+
+  /**
+   * A completed turn with nobody watching is `done` (green), not `idle`.
+   * opencode's free-text question renders exactly like an empty prompt box, so
+   * "it asked me something" and "it finished its turn" are the same screen —
+   * and `done` is the honest reading of both.
+   */
+  it.each<[string, string]>([
+    ['opencode-question', 'opencode'],
+    ['opencode-after-run', 'opencode'],
+    ['pi-after-run', 'pi'],
+  ])('%s reaches done once it has been busy long enough', async (fixture, harnessId) => {
+    const harness = requireHarness(harnessId);
+    const snapshot = await replayFixture(fixture, harness, 30_000);
+    expect(snapshot.status).toBe('done');
+  });
+
+  it('a short startup burst stays idle rather than going green', async () => {
+    // opencode paints its TUI in about two seconds, well under the 4s
+    // finished_after_busy_ms threshold, so a fresh session must not go green.
+    const snapshot = await replayFixture('opencode-idle', requireHarness('opencode'), 2_000);
+    expect(snapshot.status).toBe('idle');
+  });
+
+  it('reports which rule fired, so a wrong regex is visible', async () => {
+    const snapshot = await replayFixture('opencode-menu', requireHarness('opencode'));
+    expect(snapshot.matchedRule).toBe(requireHarness('opencode').waitingInput[0]?.re.source);
+  });
+
+  it('exposes byte-exact quick actions for the opencode selector', async () => {
+    const snapshot = await replayFixture('opencode-menu', requireHarness('opencode'));
+    expect(snapshot.actions).toEqual([
+      { label: 'Submit', keys: '\r' },
+      { label: 'Dismiss', keys: '\u001b' },
+    ]);
+  });
+});
+
+describe('detection against synthetic fixtures (unverified harnesses)', () => {
   it.each<[string, string, SessionStatus, WaitKind | undefined]>([
     ['claude-permission', 'claude-code', 'waiting_input', 'permission'],
     ['claude-busy', 'claude-code', 'busy', undefined],
     ['claude-idle', 'claude-code', 'idle', undefined],
-    ['opencode-permission', 'opencode', 'waiting_input', 'permission'],
     ['gemini-permission', 'gemini-cli', 'waiting_input', 'permission'],
   ])('%s replayed against %s yields %s', async (fixture, harnessId, status, waitKind) => {
     const snapshot = await replayFixture(fixture, requireHarness(harnessId));

@@ -60,6 +60,7 @@ export class StatusEngine extends EventEmitter {
 
   private timer: TimerHandle | undefined;
   private busySince: number | undefined;
+  private lastDataAt: number | undefined;
   private snapshot: StatusSnapshot;
   private disposed = false;
 
@@ -91,6 +92,7 @@ export class StatusEngine extends EventEmitter {
     if (this.disposed || this.isTerminal()) return;
 
     if (this.snapshot.status !== 'busy') this.busySince = this.now();
+    this.lastDataAt = this.now();
     this.transition({ status: 'busy' });
     this.armIdleTimer();
   }
@@ -175,9 +177,15 @@ export class StatusEngine extends EventEmitter {
 
     // A long stretch of work that has now gone quiet is a *finished task*, not
     // mere quiet. `done` stays until someone acknowledges it.
+    //
+    // Measured from first to LAST byte, not to now: `now` is always exactly
+    // `idleMs` past the last byte, so including it would silently lower the
+    // threshold by 2.5s and make `finished_after_busy_ms` mean something other
+    // than "produced output for this long".
     const wasLongBusy =
       this.busySince !== undefined &&
-      this.now() - this.busySince > this.harness.finishedAfterBusyMs;
+      this.lastDataAt !== undefined &&
+      this.lastDataAt - this.busySince > this.harness.finishedAfterBusyMs;
     this.transition({ status: wasLongBusy ? 'done' : 'idle' });
   }
 

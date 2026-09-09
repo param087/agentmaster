@@ -293,7 +293,14 @@ describe('done acknowledgement', () => {
     'flips a done session to idle when a viewer attaches',
     async () => {
       // finishedAfterBusyMs: 0 makes any busy stretch count as a finished task.
-      const m = newManager(bashHarness({ finishedAfterBusyMs: 0 }));
+      // Output must span real time: `done` is measured from the first byte to the
+      // last, so a single `echo` has a zero-length busy stretch by definition.
+      const m = newManager(
+        bashHarness({
+          finishedAfterBusyMs: 0,
+          args: ['-c', 'echo a; sleep 0.2; echo b; sleep 30'],
+        }),
+      );
       const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
       const session = m.get(info.id)!;
 
@@ -309,7 +316,14 @@ describe('done acknowledgement', () => {
   it(
     'never emits done while a viewer is watching, emitting exactly one idle',
     async () => {
-      const m = newManager(bashHarness({ finishedAfterBusyMs: 0 }));
+      // Output must span real time: `done` is measured from the first byte to the
+      // last, so a single `echo` has a zero-length busy stretch by definition.
+      const m = newManager(
+        bashHarness({
+          finishedAfterBusyMs: 0,
+          args: ['-c', 'echo a; sleep 0.2; echo b; sleep 30'],
+        }),
+      );
       const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
       const session = m.get(info.id)!;
       session.attach(new CollectingViewer());

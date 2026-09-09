@@ -29,7 +29,15 @@ export interface Harness {
 }
 
 const WATCH_DEBOUNCE_MS = 200;
-const INLINE_IGNORE_CASE = /^\(\?i\)/;
+/**
+ * Leading inline flags, e.g. `(?i)`, `(?m)`, `(?im)`.
+ *
+ * JS has no inline flag syntax, so a leading group is stripped and translated
+ * into real RegExp flags. `m` matters a lot here: rules run against a whole
+ * rendered screen joined by newlines, so anchoring a pattern to a single screen
+ * line requires multiline mode.
+ */
+const INLINE_FLAGS = /^\(\?([im]+)\)/;
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -38,13 +46,14 @@ export const DEFAULT_HARNESSES_PATH = resolve(packageRoot, '..', 'harnesses.yaml
 
 /**
  * Compiles a YAML `match` / `busy_marker` string into a RegExp.
- * JS has no inline `(?i)` flag, so a leading one is translated to the `i` flag.
+ * JS has no inline flags, so a leading `(?i)` / `(?m)` / `(?im)` is translated.
  */
 function compileRegExp(pattern: string, harnessId: string, field: string): RegExp {
-  const ignoreCase = INLINE_IGNORE_CASE.test(pattern);
-  const source = pattern.replace(INLINE_IGNORE_CASE, '');
+  const inline = INLINE_FLAGS.exec(pattern);
+  const flags = inline?.[1] ?? '';
+  const source = pattern.replace(INLINE_FLAGS, '');
   try {
-    return new RegExp(source, ignoreCase ? 'i' : '');
+    return new RegExp(source, flags);
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new Error(

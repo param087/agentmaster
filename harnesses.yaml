@@ -1,18 +1,58 @@
+# Harness registry and status-detection rules.
+#
+# Rules match the *rendered terminal screen* (see server/src/status/screen-model.ts),
+# not the raw byte stream. Prefer matching the harness's **input affordance** —
+# the footer a TUI draws whenever a selection widget is open — over the wording
+# of any one prompt. Affordances are structural, few per harness, and survive
+# version bumps; prompt sentences do not.
+#
+# VERIFIED means a fixture in server/test/fixtures/ was captured from the real
+# CLI and is asserted in server/test/detection.test.ts.
+
 defaults:
   idle_ms: 2500
-  finished_after_busy_ms: 20000
+  # Busy for longer than this, then quiet with nobody watching => `done` (green).
+  # Agent CLIs end their turn and wait for you rather than blocking on a prompt,
+  # so "finished a turn" is the actionable state and 4s comfortably clears
+  # startup TUI paint without swallowing real work.
+  finished_after_busy_ms: 4000
 
 harnesses:
+  # VERIFIED against opencode 1.18.30.
+  #
+  # opencode auto-approves tool calls in this configuration, so it has no
+  # permission prompt. Its only modal blocked state is the question/select
+  # widget, which always draws this footer. A free-text question is visually
+  # identical to an idle prompt box — correctly reported as `done`, since
+  # "opencode finished its turn" and "it is waiting for you to type" are the
+  # same state.
   - id: opencode
     name: opencode
     command: opencode
     waiting_input:
-      - match: "(?i)allow this (tool|command)\\?"
-        kind: permission
+      - match: "↑↓ select\\s+enter submit"
+        kind: menu
         actions:
-          - { label: "Allow", keys: "\r" }
-          - { label: "Deny", keys: "\u001b" }
+          - { label: "Submit", keys: "\r" }
+          - { label: "Dismiss", keys: "\u001b" }
 
+  # VERIFIED against pi 0.85.1.
+  #
+  # Also auto-approves. Its selector widget (/ commands, model picker, settings)
+  # renders a `→ ` cursor and a lone `(n/total)` pagination line.
+  # NOTE: pi's status bar always reads "escape interrupt", even when idle — it
+  # must NOT be used as a busy_marker or the session would never leave `busy`.
+  - id: pi
+    name: PI
+    command: pi
+    waiting_input:
+      - match: "(?m)^\\s*\\(\\d+/\\d+\\)\\s*$"
+        kind: menu
+        actions:
+          - { label: "Submit", keys: "\r" }
+          - { label: "Dismiss", keys: "\u001b" }
+
+  # UNVERIFIED against a live CLI — reconstructed, passes synthetic fixtures only.
   - id: claude-code
     name: Claude Code
     command: claude
@@ -24,15 +64,20 @@ harnesses:
           - { label: "Yes", keys: "1\r" }
           - { label: "Allow all", keys: "2\r" }
           - { label: "No", keys: "3\r" }
+      # OAuth login. Blocks forever waiting for a pasted code, so it is every bit
+      # as actionable as a permission prompt.
+      - match: "Paste code here"
+        kind: question
       - match: "❯ \\d+\\. "
         kind: menu
 
+  # UNVERIFIED — gemini is not installed on this machine.
+  # The wording is "Allow execution of '<command>'?", not a bare
+  # "Allow execution?"; the original guess could never match.
   - id: gemini-cli
     name: Gemini CLI
     command: gemini
     waiting_input:
-      # Gemini renders "Allow execution of '<command>'?", not a bare
-      # "Allow execution?" — verified against test/fixtures/gemini-permission.cast.
       - match: "(?i)allow execution[^\\n]*\\?|apply this change\\?"
         kind: permission
         actions:
@@ -40,6 +85,7 @@ harnesses:
           - { label: "Yes, always", keys: "2\r" }
           - { label: "No", keys: "3\r" }
 
+  # UNVERIFIED — codex is not installed on this machine.
   - id: codex
     name: Codex CLI
     command: codex
@@ -47,14 +93,11 @@ harnesses:
       - match: "(?i)approve\\?|allow command\\?"
         kind: permission
 
+  # UNVERIFIED — qwen is not installed. Qwen Code is a Gemini CLI fork and
+  # shares its prompt wording.
   - id: qwen-code
     name: Qwen Code
     command: qwen
-    # Qwen Code is a Gemini CLI fork and shares its prompt wording.
     waiting_input:
       - match: "(?i)allow execution[^\\n]*\\?"
         kind: permission
-
-  - id: pi
-    name: PI
-    command: pi

@@ -142,7 +142,7 @@ describe('StatusEngine', () => {
 
   it('transitions to done after a busy stretch longer than finishedAfterBusyMs', async () => {
     const { engine: e, clock, seen } = makeEngine();
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 13; i++) {
       await e.onData(`working ${i}\r\n`);
       clock.advance(2000); // below idleMs, so the timer never fires
     }
@@ -154,7 +154,7 @@ describe('StatusEngine', () => {
 
   it('acknowledge() on done emits idle', async () => {
     const { engine: e, clock, seen } = makeEngine();
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 13; i++) {
       await e.onData(`working ${i}\r\n`);
       clock.advance(2000);
     }
