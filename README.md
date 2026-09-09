@@ -179,6 +179,27 @@ It asserts the whole journey — startup, done, acknowledgement, waiting, killed
 Close any dashboard tab first: an open tab watches the session and correctly
 acknowledges `done` before the script can observe it.
 
+## Notifications not arriving?
+
+They are the whole point of the tool, and they fail silently by default because
+the browser requires an explicit grant. In order:
+
+1. **Is permission granted?** If not, the sidebar shows a struck-through bell and
+   a banner you cannot dismiss. Click **Enable**. Chrome will not let the page
+   ask twice, so if you previously clicked Block you must re-enable it via the
+   padlock in the address bar → Site settings → Notifications.
+2. **Send a test.** Gear icon → **Send test notification**. If that does not
+   appear, the problem is the browser or the OS (check macOS Focus / Do Not
+   Disturb), not agentmaster.
+3. **Is the kind muted?** Gear icon shows a toggle per kind. Nothing is muted by
+   default.
+4. **Are you looking at that session?** Notifications are suppressed for the
+   session currently on screen in a focused tab — you can already see it. A
+   background or minimised tab still notifies.
+
+Notifications only work while the dashboard tab is open. There is no service
+worker in v1, so a closed tab is silent.
+
 ## Commands
 
 ```bash
