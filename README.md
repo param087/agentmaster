@@ -70,8 +70,8 @@ npm rebuild node-pty better-sqlite3
 | Colour | Status | Meaning |
 |---|---|---|
 | 🔵 blue (pulsing) | Working | producing output |
-| 🟠 amber | Waiting for you | blocked on a menu, permission or login — **the only state that needs action** |
-| 🟢 green | Done | finished a turn and you haven't looked yet; opening it clears the green |
+| 🟠 amber | Waiting for you | blocked on a menu or permission, **or** it finished its turn — the state that needs action |
+| 🟢 green | Done | ran autonomously to completion (e.g. `claude -p`) and you haven't looked yet |
 | ⚪ grey | Idle | alive and quiet |
 | 🟣 violet | Killed | you pressed Kill |
 | ⚫ dim grey | Exited | quit on its own |
@@ -82,13 +82,29 @@ npm rebuild node-pty better-sqlite3
 - **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Notifications work while the tab is open in the background; there is no service worker in v1.
 - `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
 
-### Green vs amber
+### Amber vs green
 
 Agent CLIs mostly **end their turn** rather than blocking on a prompt, so
-"finished, your move" is the common case and gets its own colour. A session goes
-green when you submitted something, it produced output, and then went quiet —
-and only if nobody was watching. Amber is reserved for a harness that is
-genuinely stuck on a modal choice and cannot continue without you.
+"finished, your move" is the common case — and it is amber, because it needs
+you either way. Turn-end detection is deliberately **regex-free**: you submitted
+something, it produced output, it went quiet. That works for every harness,
+including one with no rules at all.
+
+Amber therefore has two flavours, carried in `waitKind`:
+
+- `permission` / `menu` / `question` — a harness rule matched, so the CLI is
+  *modally blocked*. It clears only when the harness moves on. **Looking at it
+  does not clear it**; the menu is still on screen and the session is still
+  stuck.
+- `turn` — generic turn-end, no rule involved (`matchedRule` is unset). It is an
+  unread marker, so it clears as soon as you actually look at the session.
+
+Green is now only the autonomous case: a long busy stretch with no submit, such
+as `claude -p "do X"` launched from `args`.
+
+**Attached is not the same as looking.** A session left open in a background or
+minimised tab does not count as seen — the browser sends an explicit focus
+message, and only a *focused* viewer acknowledges anything.
 
 **Sessions are killed when the server stops.** This is deliberate for v1.
 

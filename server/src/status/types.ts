@@ -10,7 +10,17 @@ export type SessionStatus =
   | 'killed'
   | 'error';
 
-export type WaitKind = 'permission' | 'question' | 'menu' | 'unknown';
+/**
+ * Why a session is amber.
+ *
+ * `permission` / `question` / `menu` come from a harness rule: the CLI is
+ * *modally blocked* and cannot continue without you. They clear only when the
+ * harness itself moves on — looking at the screen does not unblock it.
+ *
+ * `turn` is the regex-free generic case: you submitted something, it produced
+ * output, it went quiet. It is an unread marker, so looking at it clears it.
+ */
+export type WaitKind = 'permission' | 'question' | 'menu' | 'turn' | 'unknown';
 
 export interface QuickAction {
   label: string;

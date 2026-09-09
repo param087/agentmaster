@@ -70,6 +70,7 @@ async function replayFixture(
   name: string,
   harness: Harness,
   totalBusyMs = 0,
+  opts: { submitted?: boolean } = {},
 ): Promise<StatusSnapshot> {
   const clock = new FakeClock();
   const engine = new StatusEngine(harness, {
@@ -78,6 +79,10 @@ async function replayFixture(
     clearTimeout: clock.clearTimeout,
   });
   try {
+    // A turn-end is defined by *you having submitted something*, which the
+    // recorded bytes cannot show: the `.cast` files hold output only. Fixtures
+    // captured mid-conversation replay that submit explicitly.
+    if (opts.submitted) engine.onInput('do the thing\r');
     const chunks = loadFixture(name);
     // Capped below idleMs, or the idle pass would fire mid-stream.
     const step = chunks.length > 1 ? Math.min(totalBusyMs / (chunks.length - 1), harness.idleMs - 1) : 0;
@@ -119,24 +124,44 @@ describe('detection against fixtures captured from real CLIs', () => {
     ['pi-after-run', 'pi'],
     ['opencode-question', 'opencode'],
   ])('%s must not be reported as waiting', async (fixture, harnessId) => {
+    // No submit, so no turn is outstanding either: an untouched session is
+    // never amber. This is what stops a false amber on a bare prompt box.
     const snapshot = await replayFixture(fixture, requireHarness(harnessId));
     expect(snapshot.status).not.toBe('waiting_input');
     expect(snapshot.matchedRule).toBeUndefined();
   });
 
   /**
-   * A completed turn with nobody watching is `done` (green), not `idle`.
+   * A submitted turn that produced output and went quiet is amber, not green.
+   *
    * opencode's free-text question renders exactly like an empty prompt box, so
-   * "it asked me something" and "it finished its turn" are the same screen —
-   * and `done` is the honest reading of both.
+   * "it asked me something" and "it finished its turn" are the same screen. The
+   * honest reading of both is the same too: it is your move. Calling that
+   * `done` is what swallowed the notification this behaviour exists to fix.
    */
   it.each<[string, string]>([
     ['opencode-question', 'opencode'],
     ['opencode-after-run', 'opencode'],
     ['pi-after-run', 'pi'],
-  ])('%s reaches done once it has been busy long enough', async (fixture, harnessId) => {
+  ])('%s is a turn-end once you submitted something', async (fixture, harnessId) => {
     const harness = requireHarness(harnessId);
-    const snapshot = await replayFixture(fixture, harness, 30_000);
+    const snapshot = await replayFixture(fixture, harness, 30_000, { submitted: true });
+    expect(snapshot.status).toBe('waiting_input');
+    expect(snapshot.waitKind).toBe('turn');
+    // No rule fired: this path is regex-free, so it works for every harness.
+    expect(snapshot.matchedRule).toBeUndefined();
+    expect(snapshot.actions).toBeUndefined();
+  });
+
+  /**
+   * Green survives, for the autonomous case only: a long busy stretch with no
+   * submit, e.g. `claude -p "do X"` launched from args.
+   */
+  it.each<[string, string]>([
+    ['opencode-after-run', 'opencode'],
+    ['pi-after-run', 'pi'],
+  ])('%s with no submit is done, not amber', async (fixture, harnessId) => {
+    const snapshot = await replayFixture(fixture, requireHarness(harnessId), 30_000);
     expect(snapshot.status).toBe('done');
   });
 

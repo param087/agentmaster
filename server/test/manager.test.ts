@@ -290,7 +290,7 @@ describe('PtySession status', () => {
 
 describe('done acknowledgement', () => {
   it(
-    'flips a done session to idle when a viewer attaches',
+    'flips a done session to idle when a viewer focuses it',
     async () => {
       // finishedAfterBusyMs: 0 makes any busy stretch count as a finished task.
       // Output must span real time: `done` is measured from the first byte to the
@@ -307,14 +307,22 @@ describe('done acknowledgement', () => {
       await waitForStatus(session, 'done');
       expect(session.info.status).toBe('done');
 
-      session.attach(new CollectingViewer());
+      // UPDATED SEMANTICS: attaching is not looking. A socket open in a
+      // background tab must leave the session green.
+      const viewer = new CollectingViewer();
+      session.attach(viewer);
+      expect(session.info.status).toBe('done');
+      expect(session.focusedCount).toBe(0);
+
+      session.setFocused(viewer, true);
+      expect(session.focusedCount).toBe(1);
       expect(session.info.status).toBe('idle');
     },
     PTY_TIMEOUT,
   );
 
   it(
-    'never emits done while a viewer is watching, emitting exactly one idle',
+    'never emits done while a viewer is focused, emitting exactly one idle',
     async () => {
       // Output must span real time: `done` is measured from the first byte to the
       // last, so a single `echo` has a zero-length busy stretch by definition.
@@ -326,7 +334,9 @@ describe('done acknowledgement', () => {
       );
       const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
       const session = m.get(info.id)!;
-      session.attach(new CollectingViewer());
+      const viewer = new CollectingViewer();
+      session.attach(viewer);
+      session.setFocused(viewer, true);
 
       const seen: SessionStatus[] = [];
       session.on('status', (s: { status: SessionStatus }) => seen.push(s.status));
@@ -340,6 +350,55 @@ describe('done acknowledgement', () => {
     },
     PTY_TIMEOUT,
   );
+
+  it(
+    'still goes done for a session watched only by a background tab',
+    async () => {
+      // The bug this whole change exists to fix: attached ≠ looking at it.
+      const m = newManager(
+        bashHarness({
+          finishedAfterBusyMs: 0,
+          args: ['-c', 'echo a; sleep 0.2; echo b; sleep 30'],
+        }),
+      );
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      const viewer = new CollectingViewer();
+      session.attach(viewer);
+      session.setFocused(viewer, false);
+
+      await waitForStatus(session, 'done');
+      expect(session.info.status).toBe('done');
+      expect(session.viewerCount).toBe(1);
+      expect(session.focusedCount).toBe(0);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it('drops a viewer from both sets on detach', () => {
+    const m = newManager();
+    const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    const session = m.get(info.id)!;
+    const viewer = new CollectingViewer();
+
+    session.attach(viewer);
+    session.setFocused(viewer, true);
+    expect(session.viewerCount).toBe(1);
+    expect(session.focusedCount).toBe(1);
+
+    session.detach(viewer);
+    expect(session.viewerCount).toBe(0);
+    expect(session.focusedCount).toBe(0);
+  });
+
+  it('ignores focus from a viewer that never attached', () => {
+    const m = newManager();
+    const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    const session = m.get(info.id)!;
+
+    session.setFocused(new CollectingViewer(), true);
+    expect(session.focusedCount).toBe(0);
+  });
 });
 
 describe('SessionManager lifecycle', () => {
@@ -383,6 +442,23 @@ describe('notifications', () => {
     expect(notify.kind).toBe('waiting');
     expect(notify.title).toContain('Test Bash');
     expect(notify.body).toContain('permission');
+  });
+
+  it('words a generic turn-end as "your turn", under the same waiting kind', () => {
+    const m = newManager();
+    const events = collectEvents();
+    const cwd = tmpdir();
+    const info = m.create({ harnessId: 'test-bash', cwd });
+    const session = m.get(info.id)!;
+
+    session.emit('status', { status: 'waiting_input', waitKind: 'turn', at: Date.now() });
+
+    const notify = events.find((e) => e.t === 'notify');
+    if (notify?.t !== 'notify') throw new Error('expected a notify event');
+    // Still `waiting`, so both flavours of amber share one cooldown window.
+    expect(notify.kind).toBe('waiting');
+    expect(notify.title).toBe('Test Bash finished');
+    expect(notify.body).toBe(`${basename(cwd)} · your turn`);
   });
 
   it('suppresses a second notify of the same kind within the cooldown window', () => {

@@ -352,6 +352,79 @@ describe('/ws/term/:id', () => {
   );
 });
 
+describe('/ws/term/:id control frames', () => {
+  it(
+    'never writes a text control frame into the PTY',
+    async () => {
+      // A bug here would inject `{"type":"focus"}` into the user's live
+      // session, so this is asserted against real PTY output, not a spy.
+      const base = await boot(bashHarness({ args: ['-c', 'cat'] }));
+      const session = await createSession(base);
+      const live = manager!.get(session.id)!;
+
+      const ws = open(wsUrl(base, `/ws/term/${session.id}`));
+      const frames: Buffer[] = [];
+      ws.on('message', (raw) => frames.push(Buffer.from(raw as Buffer)));
+      await onceOpen(ws);
+      await sleep(300);
+
+      // Text frames: valid control, malformed JSON, unknown type, wrong shape.
+      ws.send(JSON.stringify({ type: 'focus', focused: true }));
+      ws.send('{not json at all');
+      ws.send(JSON.stringify({ type: 'teleport', focused: true }));
+      ws.send(JSON.stringify({ type: 'focus', focused: 'yes' }));
+      await sleep(300);
+
+      // `cat` echoes everything it is written, so anything that reached the PTY
+      // would be in the output. A marker proves the pipe is actually live.
+      ws.send(Buffer.from('MARKER\n'));
+      await waitFor(() => Buffer.concat(frames).toString('utf8').includes('MARKER'), 8000);
+
+      const text = Buffer.concat(frames).toString('utf8');
+      expect(text).not.toContain('focus');
+      expect(text).not.toContain('type');
+      expect(text).not.toContain('not json at all');
+      expect(text).not.toContain('teleport');
+      // The malformed and unknown frames were dropped, not fatal.
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      // ...and the one valid control frame was still acted on.
+      expect(live.focusedCount).toBe(1);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'tracks focus state from text control frames',
+    async () => {
+      const base = await boot();
+      const session = await createSession(base);
+      const live = manager!.get(session.id)!;
+
+      const ws = open(wsUrl(base, `/ws/term/${session.id}`));
+      await onceOpen(ws);
+      await waitFor(() => live.viewerCount === 1);
+      // Attached but not focused: a background tab is not a pair of eyes.
+      expect(live.focusedCount).toBe(0);
+
+      ws.send(JSON.stringify({ type: 'focus', focused: true }));
+      await waitFor(() => live.focusedCount === 1);
+
+      ws.send(JSON.stringify({ type: 'focus', focused: false }));
+      await waitFor(() => live.focusedCount === 0);
+
+      ws.send(JSON.stringify({ type: 'focus', focused: true }));
+      await waitFor(() => live.focusedCount === 1);
+
+      const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
+      ws.close();
+      await closed;
+      // Closing must clear BOTH sets, or a dead tab keeps swallowing notifications.
+      await waitFor(() => live.viewerCount === 0 && live.focusedCount === 0);
+    },
+    PTY_TIMEOUT,
+  );
+});
+
 describe('POST /api/sessions/:id/input and /remove', () => {
   it(
     'writes keys over HTTP and then forgets the session',

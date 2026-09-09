@@ -3,7 +3,7 @@ import { statSync } from 'node:fs';
 import * as pty from 'node-pty';
 
 import type { Harness } from '../config/harnesses.js';
-import { StatusEngine, type StatusSnapshot } from '../status/engine.js';
+import { isAcknowledgeable, StatusEngine, type StatusSnapshot } from '../status/engine.js';
 import type { Session } from '../status/types.js';
 import { RingBuffer } from './ring-buffer.js';
 
@@ -15,9 +15,14 @@ const SIGKILL_GRACE_MS = 3000;
 /**
  * Anything that can receive raw terminal bytes. Structural on purpose: a `ws`
  * WebSocket satisfies it, and so does a plain array-collecting object in tests.
+ *
+ * Viewers are tracked by *object identity*, so the same object must be passed
+ * to `attach` / `setFocused` / `detach`. `id` is optional and carries no
+ * meaning beyond making a leaked viewer identifiable in a debugger.
  */
 export interface SessionViewer {
   send(data: Buffer): void;
+  readonly id?: string;
 }
 
 export interface SessionOptions {
@@ -83,13 +88,21 @@ export class PtySession extends EventEmitter {
   private readonly ringBuffer: RingBuffer;
   private readonly engine: StatusEngine;
   private readonly viewers = new Set<SessionViewer>();
+  /**
+   * Viewers whose browser tab is actually visible and focused.
+   *
+   * Attached ≠ looking at it: a session left open in a background or minimised
+   * tab used to count as "seen", which swallowed the notification at exactly
+   * the moment it was needed.
+   */
+  private readonly focusedViewers = new Set<SessionViewer>();
 
   private killTimer: NodeJS.Timeout | undefined;
   private exited = false;
   private disposed = false;
   /** Intent, not inference: SIGTERM'd children routinely report exit code 0. */
   private killedByUser = false;
-  /** Re-entrancy guard for acknowledging a `done` that arrived mid-emit. */
+  /** Re-entrancy guard for acknowledging an unread turn that arrived mid-emit. */
   private acknowledging = false;
 
   constructor(opts: SessionOptions) {
@@ -157,11 +170,31 @@ export class PtySession extends EventEmitter {
   /**
    * Adds a viewer. Replay is the caller's job — attach order is theirs to pick.
    *
-   * Opening a session counts as looking at it, so any pending `done` is
-   * acknowledged and the session drops back to `idle`.
+   * Attaching alone does NOT acknowledge: a socket may be open in a background
+   * tab. Acknowledgement waits for {@link setFocused}. If some *other* viewer
+   * is already focused, the outstanding turn is cleared as usual.
    */
   attach(viewer: SessionViewer): void {
     this.viewers.add(viewer);
+    if (this.focusedViewers.size > 0) this.engine.acknowledge();
+  }
+
+  /**
+   * Records whether a viewer is actually looking at this session.
+   *
+   * Focusing is the "user just switched to this session" path, so it
+   * acknowledges immediately — clearing a green `done` or an amber turn-end.
+   * A modal `waiting_input` is untouched; the engine decides that.
+   */
+  setFocused(viewer: SessionViewer, focused: boolean): void {
+    if (!focused) {
+      this.focusedViewers.delete(viewer);
+      return;
+    }
+    // Only viewers that are actually attached can be focused, otherwise a
+    // stale frame from a closing socket would resurrect a detached viewer.
+    if (!this.viewers.has(viewer)) return;
+    this.focusedViewers.add(viewer);
     this.engine.acknowledge();
   }
 
@@ -170,8 +203,14 @@ export class PtySession extends EventEmitter {
     return this.viewers.size;
   }
 
+  /** Number of viewers whose tab is visible and focused. */
+  get focusedCount(): number {
+    return this.focusedViewers.size;
+  }
+
   detach(viewer: SessionViewer): void {
     this.viewers.delete(viewer);
+    this.focusedViewers.delete(viewer);
   }
 
   resize(cols: number, rows: number): void {
@@ -212,6 +251,7 @@ export class PtySession extends EventEmitter {
     this.disposed = true;
     this.clearKillTimer();
     this.viewers.clear();
+    this.focusedViewers.clear();
     this.engine.dispose();
     if (!this.exited) {
       try {
@@ -246,6 +286,7 @@ export class PtySession extends EventEmitter {
       } catch {
         // A dead socket must not stall the fan-out for everyone else.
         this.viewers.delete(viewer);
+        this.focusedViewers.delete(viewer);
       }
     }
   }
@@ -260,14 +301,19 @@ export class PtySession extends EventEmitter {
   }
 
   private onStatus(snapshot: StatusSnapshot): void {
-    // `done` means "finished, and you haven't looked yet". If someone is
-    // already watching, they *have* looked: swallow the transition rather than
-    // flashing green at a viewer who is staring straight at the output.
+    // `done` and a generic turn-end both mean "finished, and you haven't looked
+    // yet". If someone is actually *focused* on this session they have looked:
+    // swallow the transition rather than flashing at a viewer who is staring
+    // straight at the output.
+    //
+    // The test is `focusedViewers`, never `viewers`: an open socket in a
+    // background tab is not a pair of eyes, and treating it as one is precisely
+    // how the one notification that mattered got swallowed.
     //
     // `acknowledge()` re-enters this listener synchronously with the `idle`
     // snapshot; the guard makes that inner call the one that publishes, and the
-    // outer `done` frame returns without emitting anything.
-    if (snapshot.status === 'done' && this.viewers.size > 0 && !this.acknowledging) {
+    // outer frame returns without emitting anything.
+    if (isAcknowledgeable(snapshot) && this.focusedViewers.size > 0 && !this.acknowledging) {
       this.acknowledging = true;
       try {
         this.engine.acknowledge();

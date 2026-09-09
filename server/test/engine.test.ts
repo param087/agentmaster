@@ -152,7 +152,9 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'done']);
   });
 
-  it('treats a submitted turn as done even when it is over quickly', async () => {
+  // UPDATED SEMANTICS: a submitted turn going quiet is amber ("your move"),
+  // not green. Green is now reserved for the autonomous case below.
+  it('treats a submitted turn as a turn-end even when it is over quickly', async () => {
     const { engine: e, clock } = makeEngine();
     e.onInput('explain pseudo-terminals\r');
     // Output must span at least MIN_TURN_OUTPUT_MS to count as a real turn.
@@ -160,7 +162,33 @@ describe('StatusEngine', () => {
     clock.advance(800);
     await e.onData('... a kernel device pair.\r\n');
     clock.advance(2500);
-    expect(e.current.status).toBe('done');
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('turn');
+  });
+
+  it('leaves matchedRule and actions unset on a turn-end, so the UI can tell them apart', async () => {
+    const { engine: e, clock } = makeEngine();
+    e.onInput('go\r');
+    await e.onData('thinking');
+    clock.advance(800);
+    await e.onData(' answer\r\n');
+    clock.advance(2500);
+    expect(e.current.waitKind).toBe('turn');
+    expect(e.current.matchedRule).toBeUndefined();
+    expect(e.current.actions).toBeUndefined();
+  });
+
+  it('prefers a matching rule over the generic turn-end', async () => {
+    const { engine: e, clock } = makeEngine();
+    e.onInput('edit the readme\r');
+    await e.onData('reading file');
+    clock.advance(800);
+    await e.onData('\r\nDo you want to proceed?\r\n');
+    clock.advance(2500);
+    // Modal detection wins: the harness is blocked, not merely done talking.
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('permission');
+    expect(e.current.matchedRule).toBe('Do you want to proceed');
   });
 
   it('ignores the keystroke echo that precedes real work', async () => {
@@ -172,12 +200,13 @@ describe('StatusEngine', () => {
     clock.advance(2500);
     expect(e.current.status).toBe('idle');
 
-    // ...and the real answer that follows still lands on done.
+    // ...and the real answer that follows still lands on the turn-end.
     await e.onData('a pseudo-terminal is');
     clock.advance(800);
     await e.onData('... a kernel device pair.\r\n');
     clock.advance(2500);
-    expect(e.current.status).toBe('done');
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('turn');
   });
 
   it('does not go done for plain typing with no submit', async () => {
@@ -204,7 +233,8 @@ describe('StatusEngine', () => {
     clock.advance(800);
     await e.onData(' done\r\n');
     clock.advance(2500);
-    expect(e.current.status).toBe('done');
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('turn');
 
     e.acknowledge();
     expect(e.current.status).toBe('idle');
@@ -231,7 +261,41 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'done', 'idle']);
   });
 
-  it('acknowledge() is a silent no-op when not done', async () => {
+  it('acknowledge() clears a generic turn-end back to idle', async () => {
+    const { engine: e, clock, seen } = makeEngine();
+    e.onInput('go\r');
+    await e.onData('working');
+    clock.advance(800);
+    await e.onData(' done\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+
+    e.acknowledge();
+    expect(e.current.status).toBe('idle');
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input', 'idle']);
+  });
+
+  it('acknowledge() must NOT clear a modally blocked waiting_input', async () => {
+    // The menu is still on screen. Looking at a session does not answer its
+    // permission prompt, and clearing it would hide a genuinely stuck session.
+    const { engine: e, clock, seen } = makeEngine();
+    e.onInput('edit the readme\r');
+    await e.onData('Do you want to proceed?\r\n');
+    clock.advance(800);
+    await e.onData('❯ 1. Yes\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('permission');
+
+    e.acknowledge();
+    e.acknowledge();
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.waitKind).toBe('permission');
+    expect(e.current.matchedRule).toBe('Do you want to proceed');
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input']);
+  });
+
+  it('acknowledge() is a silent no-op when neither done nor a turn-end', async () => {
     const { engine: e, seen } = makeEngine();
     await e.onData('x');
     expect(e.current.status).toBe('busy');
@@ -240,6 +304,54 @@ describe('StatusEngine', () => {
     e.acknowledge();
     expect(e.current.status).toBe('busy');
     expect(seen.map((s) => s.status)).toEqual(['busy']);
+  });
+
+  it('swallows a menu repaint: waiting_input never flaps to busy', async () => {
+    const { engine: e, clock, seen } = makeEngine();
+    await e.onData('Do you want to proceed?\r\n❯ 1. Yes\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+
+    // opencode-style: repaint the same widget five times in half a minute.
+    for (let i = 0; i < 5; i++) {
+      await e.onData('\x1b[2J\x1b[HDo you want to proceed?\r\n❯ 1. Yes\r\n');
+      clock.advance(6000);
+      expect(e.current.status).toBe('waiting_input');
+    }
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input']);
+  });
+
+  it('still transitions to busy after the delay when real work starts', async () => {
+    const { engine: e, clock, seen } = makeEngine();
+    await e.onData('Do you want to proceed?\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+
+    await e.onData('\x1b[2J\x1b[Hrunning the edit\r\n');
+    // Immediately after: still amber. The whole point is not to flicker.
+    expect(e.current.status).toBe('waiting_input');
+    clock.advance(999);
+    expect(e.current.status).toBe('waiting_input');
+    clock.advance(1);
+    expect(e.current.status).toBe('busy');
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input', 'busy']);
+  });
+
+  it('honours an injected leave-waiting delay', async () => {
+    const clock = new FakeClock();
+    const e = new StatusEngine(harness, {
+      now: clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      leaveWaitingDelayMs: 50,
+    });
+    engine = e;
+    await e.onData('Do you want to proceed?\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+    await e.onData('\x1b[2J\x1b[Hoff we go\r\n');
+    clock.advance(50);
+    expect(e.current.status).toBe('busy');
   });
 
   it('records the matching rule source on a waiting transition', async () => {
@@ -257,6 +369,9 @@ describe('StatusEngine', () => {
     expect(e.current.matchedRule).toBe('Do you want to proceed');
 
     await e.onData('\x1b[2J\x1b[Hcarrying on\r\n');
+    // Leaving waiting_input is deferred by LEAVE_WAITING_DELAY_MS.
+    expect(e.current.status).toBe('waiting_input');
+    clock.advance(1000);
     expect(e.current.status).toBe('busy');
     expect(e.current.matchedRule).toBeUndefined();
 
@@ -310,6 +425,7 @@ describe('StatusEngine', () => {
     expect(e.current.status).toBe('waiting_input');
 
     await e.onData('\x1b[2J\x1b[Hcontinuing\r\n');
+    clock.advance(1000);
     expect(e.current.status).toBe('busy');
     expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input', 'busy']);
   });

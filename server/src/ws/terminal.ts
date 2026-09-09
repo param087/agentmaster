@@ -1,7 +1,8 @@
 import { WebSocket, WebSocketServer } from 'ws';
+import { z } from 'zod';
 
 import type { SessionManager } from '../session/manager.js';
-import type { SessionViewer } from '../session/session.js';
+import type { PtySession, SessionViewer } from '../session/session.js';
 import type { WsHandler } from './events.js';
 
 /** `/ws/term/<id>` → `<id>`. */
@@ -17,10 +18,41 @@ function parseDimension(value: string | null): number | undefined {
 }
 
 /**
- * `/ws/term/:id` — a raw byte pipe between the browser's xterm.js and the PTY.
+ * Control messages the browser may send as a *text* frame.
  *
- * Nothing on this path decodes, buffers by line, or rewrites anything: full
- * fidelity is exactly what makes arrow keys, `⇧Tab` and Ctrl-C work.
+ * Only `focus` exists today. Anything else — including malformed JSON — is
+ * ignored silently: a browser from a newer build must not be able to kill an
+ * otherwise healthy terminal connection.
+ */
+const controlMessageSchema = z.object({
+  type: z.literal('focus'),
+  focused: z.boolean(),
+});
+
+function toBuffer(data: Buffer | ArrayBuffer | Buffer[]): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data);
+}
+
+function handleControl(text: string, session: PtySession, viewer: SessionViewer): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return;
+  }
+  const message = controlMessageSchema.safeParse(parsed);
+  if (!message.success) return;
+  session.setFocused(viewer, message.data.focused);
+}
+
+/**
+ * `/ws/term/:id` — a byte pipe between the browser's xterm.js and the PTY.
+ *
+ * Nothing on the *binary* path decodes, buffers by line, or rewrites anything:
+ * full fidelity is exactly what makes arrow keys, `⇧Tab` and Ctrl-C work. Text
+ * frames are control messages and never reach the PTY.
  */
 export function createTerminalWs(manager: SessionManager): WsHandler {
   const wss = new WebSocketServer({ noServer: true });
@@ -50,14 +82,28 @@ export function createTerminalWs(manager: SessionManager): WsHandler {
     viewer.send(session.replay());
     session.attach(viewer);
 
+    // The opcode is the whole protocol, and it is load-bearing:
+    //
+    //   binary -> keystrokes, forwarded verbatim into the PTY. Verbatim is what
+    //             makes arrow keys, ⇧Tab and Ctrl-C work.
+    //   text   -> a JSON control message, handled here and NEVER written to the
+    //             PTY. A bug in this direction would inject `{"type":"focus"}`
+    //             into the user's live session.
+    //
+    // Nothing falls through: an unparseable or unknown control message is
+    // dropped, not forwarded and not fatal.
     ws.on('message', (data, isBinary) => {
-      void isBinary;
-      if (Buffer.isBuffer(data)) return session.write(data);
-      if (Array.isArray(data)) return session.write(Buffer.concat(data));
-      session.write(Buffer.from(data as ArrayBuffer));
+      const bytes = toBuffer(data);
+      if (isBinary) {
+        session.write(bytes);
+        return;
+      }
+      handleControl(bytes.toString('utf8'), session, viewer);
     });
 
     // A leaked viewer means the session writes into a dead socket forever.
+    // `detach` clears the focused set too, so a closed tab stops counting as
+    // eyes on the session.
     const detach = (): void => session.detach(viewer);
     ws.on('close', detach);
     ws.on('error', detach);

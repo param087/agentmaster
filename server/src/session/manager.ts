@@ -189,7 +189,18 @@ function describeNotification(
   const where = basename(cwd) || cwd;
 
   switch (snapshot.status) {
+    // Both flavours of amber notify, under the same `waiting` kind (so they
+    // share one cooldown window), but the wording has to differ: "needs you"
+    // for a harness that is modally blocked, "your turn" for a turn-end where
+    // nothing is stuck and the ball is simply in your court.
     case 'waiting_input':
+      if (snapshot.waitKind === 'turn') {
+        return {
+          kind: 'waiting',
+          title: `${harnessName} finished`,
+          body: `${where} · your turn`,
+        };
+      }
       return {
         kind: 'waiting',
         title: `${harnessName} needs you`,
