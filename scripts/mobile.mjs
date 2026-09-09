@@ -67,7 +67,18 @@ const url = `https://${host}:${HTTPS_PORT}`;
 // --- serve -----------------------------------------------------------------
 
 console.log(`\n  starting agentmaster on 127.0.0.1:${PORT}`);
-const server = spawn('npm', ['start'], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, PORT: String(PORT) } });
+// The phone loads the dashboard from the tunnel, so its WebSocket handshakes
+// carry that origin rather than a loopback one. Without this the server's origin
+// allowlist would refuse every upgrade and the terminal would never attach.
+const allowedOrigins = [url, process.env.AGENTMASTER_ALLOWED_ORIGINS]
+  .filter(Boolean)
+  .join(',');
+
+const server = spawn('npm', ['start'], {
+  cwd: ROOT,
+  stdio: 'inherit',
+  env: { ...process.env, PORT: String(PORT), AGENTMASTER_ALLOWED_ORIGINS: allowedOrigins },
+});
 
 const shutdown = () => {
   try {

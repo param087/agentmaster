@@ -12,6 +12,7 @@ import { sessionsRouter } from './routes/sessions.js';
 import { getSessions, type SessionManager } from './session/manager.js';
 import { createEventsWs } from './ws/events.js';
 import { createTerminalWs } from './ws/terminal.js';
+import { isAllowedOrigin } from './ws/origin.js';
 
 const DEFAULT_PORT = 7180;
 /** Locked decision: localhost-only, no auth. Never bind 0.0.0.0. */
@@ -80,6 +81,19 @@ export function createServer(opts: CreateServerOptions = {}): AppServer {
   const terminal = createTerminalWs(manager);
 
   server.on('upgrade', (req, socket, head) => {
+    // Checked before routing: a rejected handshake must never reach a session.
+    // The bound port is authoritative and known only once listening has begun,
+    // which is always true by the time an upgrade can arrive.
+    const address = server.address();
+    const boundPort = typeof address === 'object' && address !== null ? address.port : 0;
+
+    if (!isAllowedOrigin(req.headers.origin, boundPort)) {
+      process.stderr.write(`[ws] refused upgrade from origin ${req.headers.origin ?? '(none)'}\n`);
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     const { pathname } = new URL(req.url ?? '/', 'http://localhost');
     if (pathname === '/ws/events') return events.handleUpgrade(req, socket, head);
     if (pathname.startsWith('/ws/term/')) return terminal.handleUpgrade(req, socket, head);

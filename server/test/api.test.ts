@@ -204,6 +204,58 @@ describe('DELETE /api/sessions/:id', () => {
 });
 
 
+describe('WebSocket origin enforcement', () => {
+  /** Resolves to the HTTP status of a refused handshake, or 'open' if accepted. */
+  function handshake(base: string, path: string, origin?: string): Promise<string> {
+    const url = base.replace('http://', 'ws://') + path;
+    const ws = new WebSocket(url, origin === undefined ? {} : { headers: { Origin: origin } });
+    sockets.push(ws);
+    return new Promise((resolve) => {
+      ws.on('open', () => {
+        ws.close();
+        resolve('open');
+      });
+      ws.on('error', (err: Error) => resolve(err.message));
+    });
+  }
+
+  it('refuses a cross-origin upgrade to the event stream', async () => {
+    const base = await boot();
+    // Without this, any page the user visits could read the whole session
+    // inventory, which is all an attacker needs to target a terminal.
+    expect(await handshake(base, '/ws/events', 'https://evil.example')).toContain('403');
+  });
+
+  it('refuses a cross-origin upgrade to a terminal', async () => {
+    const base = await boot();
+    const created = (await (
+      await fetch(`${base}/api/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ harnessId: 'test-bash', cwd: homedir() }),
+      })
+    ).json()) as { session: Session };
+
+    // A terminal socket is read *and* write: typing into a PTY running an agent
+    // is arbitrary command execution.
+    expect(
+      await handshake(base, `/ws/term/${created.session.id}`, 'https://evil.example'),
+    ).toContain('403');
+  });
+
+  it('still accepts the dashboard\'s own origin', async () => {
+    const base = await boot();
+    const port = new URL(base).port;
+    expect(await handshake(base, '/ws/events', `http://127.0.0.1:${port}`)).toBe('open');
+    expect(await handshake(base, '/ws/events', `http://localhost:${port}`)).toBe('open');
+  });
+
+  it('still accepts a client that sends no origin, such as a script', async () => {
+    const base = await boot();
+    expect(await handshake(base, '/ws/events')).toBe('open');
+  });
+});
+
 describe('POST /api/harnesses/:id/enabled', () => {
   it('returns 404 for an unknown harness', async () => {
     const base = await boot();

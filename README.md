@@ -279,6 +279,40 @@ Settings detects the tab case and shows these steps instead of a button that
 cannot work. Note that iOS forgets everything if you delete the Home Screen
 icon: you have to enable push again after re-adding it.
 
+## Security
+
+**agentmaster has no authentication. Anyone who can reach the port can run
+commands as you.** A session is a real PTY running an AI agent, so writing to it
+is arbitrary code execution on your machine. This is a single-user tool for your
+own laptop; treat the port as equivalent to an open shell.
+
+Two things follow from that.
+
+**It binds `127.0.0.1` only, never `0.0.0.0`.** Remote access goes through the
+Tailscale tunnel above, which terminates TLS and proxies to loopback, so the
+server itself is never listening on a public interface.
+
+**WebSocket upgrades are checked against an origin allowlist.** Loopback binding
+alone is not enough: browsers do not apply the same-origin policy to WebSockets,
+so without this check any page you happened to visit could open a socket to
+`127.0.0.1`, read the full session inventory from `/ws/events`, then attach to
+`/ws/term/:id` to read a mirrored terminal and type into it. By default only the
+dashboard's own origin is accepted. Handshakes with no `Origin` header are
+allowed, since browsers always send one and their absence means a local script
+rather than a page.
+
+If you serve the dashboard from another origin, list it:
+
+```bash
+AGENTMASTER_ALLOWED_ORIGINS=https://your-host.ts.net:8443 npm start
+```
+
+`npm run mobile` does this for you with the tunnel URL it just created.
+
+What is deliberately *not* protected: a local process running as your user can
+reach the port directly, which is unavoidable without real authentication, and
+is no worse than that process reading your shell history or SSH keys.
+
 ## On your phone
 
 Over Tailscale, so nothing is exposed to the internet:
