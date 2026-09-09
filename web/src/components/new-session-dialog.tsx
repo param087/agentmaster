@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
 import { api, ApiError } from '../lib/api';
@@ -26,7 +26,9 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Suppresses the dialog's own Escape handling while a nested popup owns it.
-  const [popupOpen, setPopupOpen] = useState(false);
+  // A ref, not state: the window keydown listener must see the current value
+  // immediately, or a second Escape in the same frame is dropped.
+  const popupOpenRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,13 +59,13 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       if (event.key !== 'Escape') return;
       // The harness listbox closes itself first; one Escape should not dismiss
       // both it and the dialog.
-      if (popupOpen) return;
+      if (popupOpenRef.current) return;
       event.stopPropagation();
       onClose();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [onClose, popupOpen]);
+  }, [onClose]);
 
   const submit = (event: React.FormEvent): void => {
     event.preventDefault();
@@ -108,7 +110,9 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
             value={harnessId}
             onChange={setHarnessId}
             loading={loading}
-            onOpenChange={setPopupOpen}
+            onOpenChange={(v) => {
+              popupOpenRef.current = v;
+            }}
           />
           {!loading && harnesses.length === 0 && (
             <p className="text-[11px] text-base-400">

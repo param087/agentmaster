@@ -20,13 +20,6 @@ export const WAIT_KIND_SUBTITLE: Record<WaitKind, string> = {
   unknown: 'input',
 };
 
-/** Last path segment, with `/` and `~` surviving as themselves. */
-export function basename(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  if (trimmed === '') return '/';
-  return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed;
-}
-
 /**
  * Compact elapsed time: `12s`, `5m`, `3h 20m`, `2d`.
  *
@@ -73,7 +66,9 @@ export function SessionRow({
   // distinct from "your move". Both are amber; only one is stuck.
   const modal = waiting && isModalWait(session.waitKind);
   const kindLabel = waiting ? WAIT_KIND_SUBTITLE[session.waitKind ?? 'unknown'] : null;
-  const label = basename(session.cwd);
+  // The server always populates title, defaulting it to the folder name, so
+  // rendering cwd here silently discarded any title the user actually typed.
+  const label = session.title;
 
   // The rule lives in the tooltip everywhere, so a bad regex is always one hover
   // away without ever taking up space.

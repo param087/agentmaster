@@ -8,6 +8,8 @@ a session blocks on a permission prompt and sits there for forty minutes because
 nobody was looking at that tab. agentmaster mirrors every session into one
 browser window, tells you which ones need you, and notifies you when they do.
 
+![The agentmaster dashboard: three live sessions in the sidebar, one opencode session mirrored in the terminal pane](docs/screenshots/dashboard.png)
+
 ## How it works
 
 There is no protocol and no per-harness integration. Each harness is spawned in
@@ -34,6 +36,24 @@ browser (sidebar)  ──ws /events   (JSON)────┘       │
 Everything harness-specific lives in `harnesses.yaml`. Adding a CLI is a config
 entry. A CLI with *no* entry still gets a working terminal plus busy/idle/exited
 from the generic idle timer.
+
+## Screenshots
+
+Every harness is picked from one list, showing only the ones you have installed:
+
+![The New Session dialog with the harness list open, showing opencode, PI, Claude Code and Cline with their brand marks](docs/screenshots/harness-picker.png)
+
+Which harnesses appear is a setting. Anything found on your `PATH` is on by
+default, so the list stays short without any configuration:
+
+![The Harnesses section of Settings, listing twelve harnesses with toggles and "not installed" tags](docs/screenshots/settings-harnesses.png)
+
+The same dashboard on a phone — the full TUI, with a key bar supplying the keys
+a soft keyboard has no room for:
+
+| Terminal | Sessions |
+| --- | --- |
+| ![A mirrored opencode TUI on an iPhone-sized screen, with the key bar along the bottom](docs/screenshots/mobile-terminal.png) | ![The session drawer open on a phone, listing three sessions with status dots](docs/screenshots/mobile-sessions.png) |
 
 ## Requirements
 

@@ -21,7 +21,7 @@ import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
 import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
-import { basename, formatElapsed } from './session-row';
+import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
@@ -460,7 +460,7 @@ export function AppShell({
               <span className="min-w-0 flex-1 leading-tight">
                 <span className="flex items-baseline gap-2">
                   <span className="truncate text-[13px] font-medium text-base-100">
-                    {basename(selected.cwd)}
+                    {selected.title}
                   </span>
                   {/* The full path is the first thing to go when space runs
                       out; the folder name and status carry the meaning. */}

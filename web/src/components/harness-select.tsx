@@ -42,11 +42,17 @@ export function HarnessSelect({
   loading = false,
   onOpenChange,
 }: HarnessSelectProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
 
-  useEffect(() => {
-    onOpenChange?.(open);
-  }, [open, onOpenChange]);
+  /**
+   * Always use this instead of the raw setter: the parent has to learn the new
+   * state synchronously. Reporting it from an effect loses the race against a
+   * second Escape pressed in the same frame, which the dialog would then ignore.
+   */
+  const setOpen = (next: boolean): void => {
+    setOpenState(next);
+    onOpenChange?.(next);
+  };
   const [activeIndex, setActiveIndex] = useState(0);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
@@ -162,7 +168,7 @@ export function HarnessSelect({
         aria-haspopup="listbox"
         aria-label="Harness"
         disabled={loading || harnesses.length === 0}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(!open)}
         onKeyDown={onKeyDown}
         className="flex min-h-10 w-full items-center gap-2 rounded-md border border-base-700 bg-base-950 px-2.5 py-1.5 text-left text-[13px] text-base-100 transition-colors hover:border-base-600 disabled:opacity-50 focus:border-accent-dim focus:outline-none focus:ring-1 focus:ring-accent"
       >
