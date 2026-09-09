@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
-import { loadHarnesses, parseHarnesses } from '../src/config/harnesses';
+import { getHarness, loadHarnesses, parseHarnesses, watchHarnesses } from '../src/config/harnesses';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -187,5 +188,104 @@ describe('the shipped harnesses.yaml', () => {
 
   it('loadHarnesses() reads the repo-root file', () => {
     expect(loadHarnesses().map((h) => h.id)).toContain('opencode');
+  });
+});
+
+describe('watchHarnesses', () => {
+  const VALID = ['harnesses:', '  - id: alpha', '    name: Alpha', '    command: alpha'].join('\n');
+
+  /** Polls until `predicate` holds, so we never race the filesystem watcher. */
+  async function until(predicate: () => boolean, timeoutMs = 4000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return false;
+  }
+
+  /** Write + rename, exactly how vim, VS Code and Sublime save a file. */
+  function atomicWrite(target: string, contents: string): void {
+    const temp = `${target}.tmp`;
+    writeFileSync(temp, contents);
+    renameSync(temp, target);
+  }
+
+  it('keeps firing across repeated atomic saves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnesses-watch-'));
+    const file = join(dir, 'harnesses.yaml');
+    writeFileSync(file, VALID);
+
+    const seen: string[][] = [];
+    const unwatch = watchHarnesses(file, (h) => seen.push(h.map((x) => x.id)));
+
+    try {
+      atomicWrite(file, `${VALID}\n  - id: beta\n    name: Beta\n    command: beta`);
+      expect(await until(() => seen.some((ids) => ids.includes('beta')))).toBe(true);
+
+      // The regression: a file watcher would now be bound to the orphaned inode
+      // left behind by the first rename, and this second save would be missed.
+      atomicWrite(file, `${VALID}\n  - id: gamma\n    name: Gamma\n    command: gamma`);
+      expect(await until(() => seen.some((ids) => ids.includes('gamma')))).toBe(true);
+    } finally {
+      unwatch();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not throw when the registry is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnesses-missing-'));
+    try {
+      // The server is already listening by the time this runs, so throwing here
+      // would take down a healthy process.
+      const unwatch = watchHarnesses(join(dir, 'harnesses.yaml'), () => {});
+      expect(typeof unwatch).toBe('function');
+      unwatch();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not throw when the containing directory is missing', () => {
+    const unwatch = watchHarnesses('/nonexistent-dir-xyz/harnesses.yaml', () => {});
+    expect(typeof unwatch).toBe('function');
+    unwatch();
+  });
+
+  it('keeps the previous config when an edit is invalid', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnesses-bad-'));
+    const file = join(dir, 'harnesses.yaml');
+    writeFileSync(file, VALID);
+
+    const seen: string[][] = [];
+    const unwatch = watchHarnesses(file, (h) => seen.push(h.map((x) => x.id)));
+
+    try {
+      atomicWrite(file, 'harnesses:\n  - id: broken\n    name: Broken');  // no command
+      await new Promise((r) => setTimeout(r, 800));
+      expect(seen).toEqual([]);
+      expect(getHarness('alpha')?.id ?? 'alpha').toBe('alpha');
+    } finally {
+      unwatch();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops firing after unwatch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnesses-unwatch-'));
+    const file = join(dir, 'harnesses.yaml');
+    writeFileSync(file, VALID);
+
+    let calls = 0;
+    const unwatch = watchHarnesses(file, () => { calls += 1; });
+    unwatch();
+
+    try {
+      atomicWrite(file, `${VALID}\n  - id: delta\n    name: Delta\n    command: delta`);
+      await new Promise((r) => setTimeout(r, 800));
+      expect(calls).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

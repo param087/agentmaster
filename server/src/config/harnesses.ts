@@ -1,5 +1,5 @@
-import { readFileSync, watch } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, watch, type FSWatcher } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
@@ -152,11 +152,32 @@ export function watchHarnesses(path: string, onChange: (h: Harness[]) => void): 
     }
   };
 
-  const watcher = watch(path, () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(reload, WATCH_DEBOUNCE_MS);
-    timer.unref?.();
-  });
+  const directory = dirname(path);
+  const filename = basename(path);
+
+  let watcher: FSWatcher;
+  try {
+    // Watch the DIRECTORY, not the file.
+    //
+    // Editors save atomically — write a temp file, then rename it over the
+    // target — which replaces the inode. A watcher bound to the file keeps
+    // watching the orphaned old inode, so hot reload fires exactly once and then
+    // dies silently, with no error to explain why. Watching the directory also
+    // means a deleted or not-yet-created registry recovers on its own.
+    watcher = watch(directory, (_event, changed) => {
+      // `changed` is null on some platforms; treat that as "might be ours".
+      if (changed !== null && changed !== filename) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(reload, WATCH_DEBOUNCE_MS);
+      timer.unref?.();
+    });
+  } catch (error) {
+    // Never take the server down over a missing config directory — the caller
+    // has already started listening by this point.
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[harnesses] cannot watch ${directory}, hot reload disabled: ${reason}\n`);
+    return () => {};
+  }
 
   return () => {
     if (timer) clearTimeout(timer);
