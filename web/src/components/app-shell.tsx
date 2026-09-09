@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BellOff, Skull, Trash2 } from 'lucide-react';
+import { BellOff, RotateCcw, Skull, Trash2 } from 'lucide-react';
 
 import type { Session } from '../lib/types';
 import { api, ApiError } from '../lib/api';
@@ -111,6 +111,15 @@ export function AppShell({
     });
   };
 
+  const clearFinished = (): void => {
+    const count = sessions.filter((s) => isTerminalStatus(s.status)).length;
+    if (count === 0) return;
+    const ok = window.confirm(
+      `Forget ${count} stopped session${count === 1 ? '' : 's'}? Their output will be discarded.`,
+    );
+    if (ok) runAction(api.removeFinished().then(() => undefined));
+  };
+
   const remove = (session: Session): void => {
     // Removing discards the scrollback for good, so it is the one destructive
     // button in the app and the only one that asks.
@@ -138,6 +147,7 @@ export function AppShell({
         notificationsDeaf={notificationsDeaf}
         onNew={() => setNewOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onClearFinished={clearFinished}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -187,29 +197,45 @@ export function AppShell({
               <span className="truncate text-[11px] text-status-error">{actionError}</span>
             )}
 
-            <button
-              type="button"
-              onClick={() => runAction(api.killSession(selected.id))}
-              disabled={isTerminalStatus(selected.status)}
-              title={
-                isTerminalStatus(selected.status)
-                  ? 'This session has already ended'
-                  : 'Send SIGTERM, keep the output'
-              }
-              className="inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 text-[11px] text-base-200 transition-colors hover:border-status-error/50 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-            >
-              <Skull className="size-3.5" />
-              Kill
-            </button>
+            {/*
+              Two slots, contextual: a stopped session offers Restart, a live one
+              offers Kill. Same positions either way, so nothing shifts when a
+              session dies under the cursor.
+            */}
+            {isTerminalStatus(selected.status) ? (
+              <button
+                type="button"
+                onClick={() => runAction(api.restartSession(selected.id).then(() => undefined))}
+                title="Re-run this harness in the same folder"
+                className="inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 text-[11px] text-base-200 transition-colors hover:border-status-busy/60 hover:text-status-busy focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              >
+                <RotateCcw className="size-3.5" />
+                Restart
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => runAction(api.killSession(selected.id))}
+                title="Send SIGTERM, keep the output"
+                className="inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 text-[11px] text-base-200 transition-colors hover:border-status-error/50 hover:text-status-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              >
+                <Skull className="size-3.5" />
+                Kill
+              </button>
+            )}
 
             <button
               type="button"
               onClick={() => remove(selected)}
-              title="Kill and forget this session"
+              title={
+                isTerminalStatus(selected.status)
+                  ? 'Forget this session and its output'
+                  : 'Kill and forget this session'
+              }
               className="inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 text-[11px] text-base-200 transition-colors hover:border-status-error/50 hover:text-status-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
               <Trash2 className="size-3.5" />
-              Remove
+              {isTerminalStatus(selected.status) ? 'Delete' : 'Remove'}
             </button>
           </header>
         ) : (

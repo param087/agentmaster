@@ -5,7 +5,7 @@ import { emitServerEvent } from '../bus.js';
 import { getHarness, loadHarnesses, type Harness } from '../config/harnesses.js';
 import { openDb, type Db } from '../db/index.js';
 import type { StatusSnapshot } from '../status/engine.js';
-import type { Session } from '../status/types.js';
+import { isTerminalStatus, type Session } from '../status/types.js';
 import { PtySession } from './session.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
@@ -122,6 +122,39 @@ export class SessionManager {
     this.map.get(id)?.kill();
   }
 
+  /**
+   * Re-spawns a stopped session in place, keeping its id and its history.
+   *
+   * `force` kills a still-running session first; without it a live session is
+   * rejected, so a mis-click cannot destroy work in progress.
+   *
+   * Async because killing is: SIGTERM is a request, not an event. Respawning
+   * before the old process is genuinely gone would leave two PTYs on one
+   * session, with the orphan still writing into the ring buffer.
+   */
+  async restart(id: string, options: { force?: boolean } = {}): Promise<Session> {
+    const session = this.map.get(id);
+    if (!session) throw new Error(`Unknown session "${id}"`);
+
+    if (!isTerminalStatus(session.info.status)) {
+      if (!options.force) {
+        throw new Error(
+          `Session "${id}" is still running. Kill it first, or restart with force.`,
+        );
+      }
+      session.kill();
+      await session.waitForExit();
+    }
+
+    session.restart();
+    // The row keeps its original created_at, so the event log reads as one
+    // continuous history across restarts rather than losing the earlier run.
+    this.db.reopenSession(id);
+    this.db.insertEvent(id, 'starting');
+    emitServerEvent({ t: 'session:updated', session: session.info });
+    return session.info;
+  }
+
   /** Kills the session and forgets it entirely. */
   remove(id: string): void {
     const session = this.map.get(id);
@@ -131,6 +164,13 @@ export class SessionManager {
     session.dispose();
     this.clearNotifyState(id);
     emitServerEvent({ t: 'session:removed', id });
+  }
+
+  /** Forgets every stopped session, leaving running ones alone. */
+  removeFinished(): number {
+    const finished = [...this.map.values()].filter((s) => isTerminalStatus(s.info.status));
+    for (const session of finished) this.remove(session.id);
+    return finished.length;
   }
 
   killAll(): void {

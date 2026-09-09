@@ -55,6 +55,11 @@ export function sessionsRouter(manager: SessionManager): Router {
   });
 
   /** Kills the process but keeps the session listed, so its output stays readable. */
+  /** Forgets every stopped session at once, leaving running ones alone. */
+  router.post('/finished/remove', (_req, res) => {
+    res.json({ removed: manager.removeFinished() });
+  });
+
   router.delete('/:id', (req, res, next) => {
     const id = req.params.id ?? '';
     if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
@@ -73,6 +78,22 @@ export function sessionsRouter(manager: SessionManager): Router {
    * Fallback path for quick actions when the terminal socket is closed.
    * Keys are written verbatim: identical to typing them into the PTY.
    */
+  /** Re-spawns a stopped session in place, keeping its id and history. */
+  router.post('/:id/restart', (req, res, next) => {
+    const id = req.params.id ?? '';
+    if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
+
+    // `?force=1` kills a live session first. Without it a running session is a
+    // 400, so a mis-click cannot throw away work in progress.
+    const force = req.query['force'] === '1' || req.query['force'] === 'true';
+    manager
+      .restart(id, { force })
+      .then((session) => res.json({ session }))
+      .catch((error: unknown) =>
+        next(httpError(400, error instanceof Error ? error.message : String(error))),
+      );
+  });
+
   router.post('/:id/input', (req, res, next) => {
     const id = req.params.id ?? '';
     const session = manager.get(id);

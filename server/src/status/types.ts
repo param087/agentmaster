@@ -59,3 +59,14 @@ export type ServerEvent =
       title: string;
       body: string;
     };
+
+/** Statuses where the process is gone and only a restart can revive it. */
+export const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'exited',
+  'killed',
+  'error',
+]);
+
+export function isTerminalStatus(status: SessionStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}

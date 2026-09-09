@@ -4,6 +4,7 @@ import type { Session } from '../lib/types';
 import { cn } from '../lib/cn';
 import { AttentionQueue } from './attention-queue';
 import { SessionRow } from './session-row';
+import { isTerminalStatus } from './status-dot';
 
 export interface SidebarProps {
   sessions: Session[];
@@ -20,6 +21,8 @@ export interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onOpenSettings: () => void;
+  /** Forgets every stopped session. Only offered when there are some. */
+  onClearFinished: () => void;
 }
 
 export function Sidebar({
@@ -28,10 +31,12 @@ export function Sidebar({
   connected,
   now,
   notificationsDeaf,
+  onClearFinished,
   onSelect,
   onNew,
   onOpenSettings,
 }: SidebarProps) {
+  const finishedCount = sessions.filter((s) => isTerminalStatus(s.status)).length;
   return (
     <aside className="flex h-full w-[280px] shrink-0 flex-col border-r border-base-800 bg-base-900">
       <header className="flex shrink-0 items-center gap-2 border-b border-base-800 px-3 py-2.5">
@@ -87,9 +92,25 @@ export function Sidebar({
           onSelect={onSelect}
         />
 
-        <h2 className="flex items-center justify-between px-3.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-400">
+        <h2 className="flex items-center gap-2 px-3.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-400">
           Sessions
-          <span className="tabular-nums text-base-500">{sessions.length}</span>
+          <span className="ml-auto tabular-nums text-base-500">{sessions.length}</span>
+          {/*
+            Stopped sessions are kept on purpose so their output stays readable,
+            so the list only grows. This is the manual escape hatch — nothing is
+            ever pruned automatically, because silently deleting history is worse
+            than a long list.
+          */}
+          {finishedCount > 0 && (
+            <button
+              type="button"
+              onClick={onClearFinished}
+              title={`Forget ${finishedCount} stopped session${finishedCount === 1 ? '' : 's'}`}
+              className="rounded border border-transparent px-1 py-0.5 text-[9px] uppercase tracking-[0.1em] text-base-500 transition-colors hover:border-base-700 hover:text-base-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+              Clear
+            </button>
+          )}
         </h2>
 
         {sessions.length === 0 ? (

@@ -26,6 +26,11 @@ export interface EventRow {
 export interface Db {
   insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode'>): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
+  /**
+   * Marks a restarted session as running again, keeping its original
+   * `created_at` and its full event history.
+   */
+  reopenSession(id: string): void;
   insertEvent(
     sessionId: string,
     status: SessionStatus,
@@ -151,6 +156,9 @@ export function openDb(path?: string): Db {
     markExited: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = ? WHERE id = ?`,
     ),
+    reopenSession: sqlite.prepare(
+      `UPDATE sessions SET exited_at = NULL, exit_code = NULL WHERE id = ?`,
+    ),
     insertEvent: sqlite.prepare(
       `INSERT INTO events (session_id, at, status, wait_kind) VALUES (?, ?, ?, ?)`,
     ),
@@ -173,6 +181,9 @@ export function openDb(path?: string): Db {
     },
     markExited(id, exitCode, at = Date.now()) {
       stmts.markExited.run(at, exitCode, id);
+    },
+    reopenSession(id) {
+      stmts.reopenSession.run(id);
     },
     insertEvent(sessionId, status, waitKind = null, at = Date.now()) {
       stmts.insertEvent.run(sessionId, at, status, waitKind ?? null);

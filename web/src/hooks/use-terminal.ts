@@ -67,6 +67,27 @@ export interface UseTerminalResult {
 }
 
 /**
+ * Control messages the *server* sends, as text frames.
+ *
+ * `reset` arrives when a session is restarted in place: the terminal is still
+ * showing the dead run's output, and without clearing it the new run's output
+ * would be appended to a corpse.
+ */
+type ServerControlMessage = { type: 'reset' };
+
+function handleControl(raw: string, term: Terminal): void {
+  let message: unknown;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return; // Unparseable control is ignored, never rendered.
+  }
+  if (typeof message !== 'object' || message === null) return;
+  const { type } = message as Partial<ServerControlMessage>;
+  if (type === 'reset') term.reset();
+}
+
+/**
  * Whether the user can actually see this tab.
  *
  * Both halves matter: a visible tab in an unfocused window is not being looked
@@ -206,8 +227,15 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
 
       ws.onmessage = (event: MessageEvent<unknown>) => {
         if (cancelled) return;
-        // The first frame is the replayed scrollback; the rest is live output.
-        if (event.data instanceof ArrayBuffer) term.write(new Uint8Array(event.data));
+        // Opcode decides meaning, in both directions: binary is terminal bytes,
+        // text is control. Only binary is ever written to xterm, so a control
+        // message can never be rendered as garbage in the user's session.
+        if (event.data instanceof ArrayBuffer) {
+          // The first frame is the replayed scrollback; the rest is live output.
+          term.write(new Uint8Array(event.data));
+          return;
+        }
+        if (typeof event.data === 'string') handleControl(event.data, term);
       };
 
       ws.onerror = () => {

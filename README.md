@@ -79,6 +79,7 @@ npm rebuild node-pty better-sqlite3
 
 - **Needs attention** — amber sessions, longest-waiting first
 - **Quick actions** — when a session is blocked, its harness's answer buttons appear under the terminal. They send keystrokes; a click is indistinguishable from typing.
+- **Kill** stops the process but keeps the session listed, so its output stays readable. **Restart** re-runs the same harness in the same folder, reusing the session's slot and clearing the terminal. **Delete** forgets it for good, and **Clear** in the sidebar header forgets every stopped session at once.
 - **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Notifications work while the tab is open in the background; there is no service worker in v1.
 - `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
 
@@ -106,7 +107,15 @@ as `claude -p "do X"` launched from `args`.
 minimised tab does not count as seen — the browser sends an explicit focus
 message, and only a *focused* viewer acknowledges anything.
 
-**Sessions are killed when the server stops.** This is deliberate for v1.
+**Sessions are killed when the server stops.** This is deliberate for v1: nothing
+is persisted across a restart, and in development `tsx watch` restarts the server
+on every code change, which is the usual reason sessions vanish unexpectedly.
+
+Within a single run, a stopped session keeps its scrollback so you can read what
+happened, and `Restart` brings it back. Its event history survives a restart too,
+so the timeline reads as one continuous session rather than losing the earlier
+run. Stopped sessions are never pruned automatically — silently deleting history
+is worse than a long list — so use **Clear** when the list gets noisy.
 
 ## `harnesses.yaml`
 

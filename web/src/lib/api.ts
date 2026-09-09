@@ -83,6 +83,19 @@ export const api = {
     return request<void>(`/sessions/${encodeURIComponent(id)}/remove`, { method: 'POST' });
   },
 
+  /** Re-spawns a stopped session in place, keeping its id and scrollback slot. */
+  restartSession(id: string, force = false): Promise<{ session: Session }> {
+    const query = force ? '?force=1' : '';
+    return request<{ session: Session }>(`/sessions/${encodeURIComponent(id)}/restart${query}`, {
+      method: 'POST',
+    });
+  },
+
+  /** Forgets every stopped session, leaving running ones alone. */
+  removeFinished(): Promise<{ removed: number }> {
+    return request<{ removed: number }>('/sessions/finished/remove', { method: 'POST' });
+  },
+
   sendInput(id: string, keys: string): Promise<void> {
     return request<void>(`/sessions/${encodeURIComponent(id)}/input`, jsonPost({ keys }));
   },

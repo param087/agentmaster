@@ -463,3 +463,132 @@ describe('POST /api/sessions/:id/input and /remove', () => {
     PTY_TIMEOUT,
   );
 });
+
+describe('POST /api/sessions/:id/restart', () => {
+  /** Polls the session list until `predicate` holds. */
+  async function waitForSession(
+    base: string,
+    id: string,
+    predicate: (s: Session) => boolean,
+    timeoutMs = 8000,
+  ): Promise<Session> {
+    const deadline = Date.now() + timeoutMs;
+    let last: Session | undefined;
+    while (Date.now() < deadline) {
+      const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+        sessions: Session[];
+      };
+      last = sessions.find((s) => s.id === id);
+      if (last && predicate(last)) return last;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`timed out; last status ${last?.status}`);
+  }
+
+  it('returns 404 for an unknown id', async () => {
+    const base = await boot();
+    const res = await fetch(`${base}/api/sessions/nope/restart`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it(
+    'restarts a killed session in place',
+    async () => {
+      const base = await boot();
+      const session = await createSession(base);
+
+      await fetch(`${base}/api/sessions/${session.id}`, { method: 'DELETE' });
+      await waitForSession(base, session.id, (s) => s.status === 'killed');
+
+      const res = await fetch(`${base}/api/sessions/${session.id}/restart`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const restarted = ((await res.json()) as { session: Session }).session;
+      expect(restarted.id).toBe(session.id);
+      expect(restarted.exitCode).toBeUndefined();
+
+      await waitForSession(base, session.id, (s) => s.status === 'busy' || s.status === 'idle');
+    },
+    20_000,
+  );
+
+  it(
+    'rejects restarting a live session with 400, and accepts it with force',
+    async () => {
+      const base = await boot();
+      const session = await createSession(base);
+      await waitForSession(base, session.id, (s) => s.status !== 'starting');
+
+      const plain = await fetch(`${base}/api/sessions/${session.id}/restart`, { method: 'POST' });
+      expect(plain.status).toBe(400);
+      expect((await plain.json()) as { error: string }).toHaveProperty('error');
+
+      const forced = await fetch(`${base}/api/sessions/${session.id}/restart?force=1`, {
+        method: 'POST',
+      });
+      expect(forced.status).toBe(200);
+    },
+    20_000,
+  );
+
+  it(
+    'sends a reset control frame to attached viewers, and never into the PTY',
+    async () => {
+      const base = await boot();
+      const session = await createSession(base);
+
+      const ws = open(wsUrl(base, `/ws/term/${session.id}`));
+      const binary: Buffer[] = [];
+      const text: string[] = [];
+      ws.on('message', (data: Buffer, isBinary: boolean) => {
+        if (isBinary) binary.push(data);
+        else text.push(data.toString('utf8'));
+      });
+      await onceOpen(ws);
+
+      await fetch(`${base}/api/sessions/${session.id}`, { method: 'DELETE' });
+      await waitForSession(base, session.id, (s) => s.status === 'killed');
+      await fetch(`${base}/api/sessions/${session.id}/restart`, { method: 'POST' });
+      await new Promise((r) => setTimeout(r, 500));
+
+      expect(text).toContain(JSON.stringify({ type: 'reset' }));
+      // The browser writes every binary message straight into xterm, so the
+      // control message must never arrive on that opcode.
+      expect(Buffer.concat(binary).toString('utf8')).not.toContain('reset');
+    },
+    20_000,
+  );
+});
+
+describe('POST /api/sessions/finished/remove', () => {
+  it(
+    'forgets stopped sessions and leaves running ones alone',
+    async () => {
+      const base = await boot();
+      const dead = await createSession(base);
+      const alive = await createSession(base);
+
+      await fetch(`${base}/api/sessions/${dead.id}`, { method: 'DELETE' });
+      // Poll until the kill lands, or the sweep would find nothing finished.
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+          sessions: Session[];
+        };
+        if (sessions.find((s) => s.id === dead.id)?.status === 'killed') break;
+        if (Date.now() > deadline) throw new Error('kill did not land');
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      // Declared before `/:id/remove`, or Express would capture "finished" as an id.
+      const res = await fetch(`${base}/api/sessions/finished/remove`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { removed: number }).toEqual({ removed: 1 });
+
+      const { sessions } = (await (await fetch(`${base}/api/sessions`)).json()) as {
+        sessions: Session[];
+      };
+      expect(sessions.map((s) => s.id)).toEqual([alive.id]);
+    },
+    20_000,
+  );
+});

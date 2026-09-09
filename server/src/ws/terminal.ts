@@ -75,6 +75,12 @@ export function createTerminalWs(manager: SessionManager): WsHandler {
       send(data: Buffer) {
         if (ws.readyState === WebSocket.OPEN) ws.send(data, { binary: true });
       },
+      // Text frame, deliberately: the browser writes every *binary* message
+      // straight into xterm, so control must ride a different opcode or it
+      // would be rendered as garbage in the user's terminal.
+      sendControl(message) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message), { binary: false });
+      },
     };
 
     // Order is load-bearing: `attach` does not replay, so scrollback must go out

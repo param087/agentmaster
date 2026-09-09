@@ -583,3 +583,171 @@ describe('persistence', () => {
     scratch.close();
   });
 });
+
+describe('restart', () => {
+  /** Records control messages so the reset frame can be asserted directly. */
+  class ControlViewer extends CollectingViewer {
+    readonly controls: unknown[] = [];
+    sendControl(message: unknown): void {
+      this.controls.push(message);
+    }
+  }
+
+  it(
+    'respawns a killed session in place, keeping its id',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitFor(() => session.replay().toString('utf8').includes('hello'));
+      m.kill(info.id);
+      await waitForStatus(session, 'killed');
+
+      const restarted = await m.restart(info.id);
+      expect(restarted.id).toBe(info.id);
+      expect(restarted.status).toBe('starting');
+      expect(restarted.exitCode).toBeUndefined();
+      expect(m.list()).toHaveLength(1);
+
+      // A live PTY again, not a corpse.
+      await waitForStatus(session, 'busy');
+      expect(session.restartCount).toBe(1);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'clears scrollback so the new run does not inherit the old output',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitFor(() => session.replay().toString('utf8').includes('hello'));
+      m.kill(info.id);
+      await waitForStatus(session, 'killed');
+
+      await m.restart(info.id);
+      // Immediately after restart the buffer holds at most the new run's output.
+      expect(session.replay().toString('utf8')).not.toContain('hello\r\nhello');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'refuses to restart a running session unless forced',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      await waitForStatus(session, 'busy');
+
+      await expect(m.restart(info.id)).rejects.toThrow(/still running/i);
+
+      const forced = await m.restart(info.id, { force: true });
+      expect(forced.status).toBe('starting');
+      await waitForStatus(session, 'busy');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it('rejects for an unknown session', async () => {
+    const m = newManager();
+    await expect(m.restart('nope')).rejects.toThrow(/unknown session/i);
+  });
+
+  it(
+    'survives being restarted twice, proving state is fully reset',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      for (let i = 1; i <= 2; i += 1) {
+        m.kill(info.id);
+        await waitForStatus(session, 'killed');
+        await m.restart(info.id);
+        await waitForStatus(session, 'busy');
+        expect(session.restartCount).toBe(i);
+      }
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'tells attached viewers to reset their terminal',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      const viewer = new ControlViewer();
+      session.attach(viewer);
+
+      m.kill(info.id);
+      await waitForStatus(session, 'killed');
+      await m.restart(info.id);
+
+      // Without this the new output would be appended to the dead session's
+      // screen in every open browser.
+      expect(viewer.controls).toEqual([{ type: 'reset' }]);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'keeps the original created_at and the full event history',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      const createdAt = db!.getSession(info.id)!.createdAt;
+
+      m.kill(info.id);
+      await waitForStatus(session, 'killed');
+      await m.restart(info.id);
+
+      const row = db!.getSession(info.id)!;
+      expect(row.createdAt).toBe(createdAt);
+      expect(row.exitedAt).toBeNull();
+      expect(db!.listEvents(info.id).map((e) => e.status)).toContain('killed');
+      expect(db!.listEvents(info.id).map((e) => e.status)).toContain('starting');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'releases the terminal emulator on exit but still replays scrollback',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitFor(() => session.replay().toString('utf8').includes('hello'));
+      m.kill(info.id);
+      await waitForStatus(session, 'killed');
+
+      // The ring buffer deliberately outlives the engine: a stopped session is
+      // still readable, it just stops holding a headless terminal per corpse.
+      expect(session.replay().toString('utf8')).toContain('hello');
+      expect(session.info.status).toBe('killed');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'removeFinished forgets stopped sessions and leaves running ones',
+    async () => {
+      const m = newManager();
+      const dead = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const alive = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+
+      m.kill(dead.id);
+      await waitForStatus(m.get(dead.id)!, 'killed');
+
+      expect(m.removeFinished()).toBe(1);
+      expect(m.list().map((s) => s.id)).toEqual([alive.id]);
+    },
+    PTY_TIMEOUT,
+  );
+});

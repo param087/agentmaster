@@ -20,8 +20,19 @@ const SIGKILL_GRACE_MS = 3000;
  * to `attach` / `setFocused` / `detach`. `id` is optional and carries no
  * meaning beyond making a leaked viewer identifiable in a debugger.
  */
+/** A control message sent *to* the browser, distinct from terminal bytes. */
+export type ViewerControl = { type: 'reset' };
+
 export interface SessionViewer {
   send(data: Buffer): void;
+  /**
+   * Sends a control message as a WebSocket **text** frame.
+   *
+   * Terminal output is binary; control is text. Keeping them on separate
+   * opcodes is what stops a control message being rendered into the user's
+   * terminal as garbage — the same split used for input in the other direction.
+   */
+  sendControl?(message: ViewerControl): void;
   readonly id?: string;
 }
 
@@ -84,9 +95,14 @@ export class PtySession extends EventEmitter {
   readonly info: Session;
 
   private readonly harness: Harness;
-  private readonly pty: pty.IPty;
+  private pty: pty.IPty;
   private readonly ringBuffer: RingBuffer;
-  private readonly engine: StatusEngine;
+  private engine: StatusEngine;
+  private readonly cwd: string;
+  private readonly cols: number;
+  private readonly rows: number;
+  /** How many times this session has been restarted in place. */
+  private restarts = 0;
   private readonly viewers = new Set<SessionViewer>();
   /**
    * Viewers whose browser tab is actually visible and focused.
@@ -114,27 +130,12 @@ export class PtySession extends EventEmitter {
 
     this.id = opts.id;
     this.harness = opts.harness;
+    this.cwd = opts.cwd;
+    this.cols = cols;
+    this.rows = rows;
     this.ringBuffer = new RingBuffer(opts.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES);
     this.engine = new StatusEngine(opts.harness, { cols, rows });
-
-    // A bare command name is handed to the PTY untouched so the child's PATH
-    // resolves it; an explicit path is used as-is.
-    const command = opts.harness.command;
-    try {
-      this.pty = pty.spawn(command, opts.harness.args, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd: opts.cwd,
-        env: childEnv(),
-      });
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(
-        `Failed to spawn harness "${opts.harness.id}" (${command}) in ${opts.cwd}: ${reason}`,
-        { cause },
-      );
-    }
+    this.pty = this.spawn();
 
     const now = Date.now();
     this.info = {
@@ -150,9 +151,88 @@ export class PtySession extends EventEmitter {
       statusChangedAt: now,
     };
 
+    this.wire();
+  }
+
+  /**
+   * Spawns the harness. A bare command name is handed to the PTY untouched so
+   * the child's PATH resolves it; an explicit path is used as-is.
+   */
+  private spawn(): pty.IPty {
+    const command = this.harness.command;
+    try {
+      return pty.spawn(command, this.harness.args, {
+        name: 'xterm-256color',
+        cols: this.cols,
+        rows: this.rows,
+        cwd: this.cwd,
+        env: childEnv(),
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(
+        `Failed to spawn harness "${this.harness.id}" (${command}) in ${this.cwd}: ${reason}`,
+        { cause },
+      );
+    }
+  }
+
+  /** Attaches listeners to the current engine and PTY. Re-run on restart. */
+  private wire(): void {
     this.engine.on('status', (snapshot: StatusSnapshot) => this.onStatus(snapshot));
     this.pty.onData((chunk) => this.onData(chunk));
     this.pty.onExit(({ exitCode }) => this.onExit(exitCode));
+  }
+
+  /**
+   * Re-spawns a stopped session in place, keeping its id.
+   *
+   * The engine and its screen are rebuilt rather than cleared: detection matches
+   * against the *rendered screen*, so a dead session's last frame — a permission
+   * menu, say — would otherwise still be on it and the restarted session would
+   * inherit a phantom amber.
+   *
+   * Throws while the process is still alive; the caller decides whether to kill
+   * first.
+   */
+  restart(): void {
+    if (this.disposed) throw new Error(`Session "${this.id}" has been removed`);
+    if (!this.exited) throw new Error(`Session "${this.id}" is still running`);
+
+    this.clearKillTimer();
+    this.engine.dispose();
+    this.ringBuffer.clear();
+
+    this.exited = false;
+    this.killedByUser = false;
+    this.acknowledging = false;
+    this.restarts += 1;
+
+    this.engine = new StatusEngine(this.harness, { cols: this.cols, rows: this.rows });
+    this.pty = this.spawn();
+    this.wire();
+
+    const now = Date.now();
+    delete this.info.exitCode;
+    delete this.info.waitKind;
+    delete this.info.actions;
+    delete this.info.matchedRule;
+    delete this.info.busySince;
+    this.info.status = 'starting';
+    this.info.pid = this.pty.pid;
+    // Reset so the row's elapsed time reads "running for", not "created at".
+    // The original creation time is preserved on the database row.
+    this.info.createdAt = now;
+    this.info.statusChangedAt = now;
+
+    // Tell attached browsers to clear their terminal, or the new session's
+    // output would be appended to the corpse of the old one.
+    this.broadcastControl({ type: 'reset' });
+  }
+
+  /** Number of in-place restarts, for diagnostics. */
+  get restartCount(): number {
+    return this.restarts;
   }
 
   /** Bytes waiting to be replayed to a newly attached browser. */
@@ -224,6 +304,23 @@ export class PtySession extends EventEmitter {
   }
 
   /** SIGTERM, escalating to SIGKILL if the process is still alive 3s later. */
+  /** Resolves once the process is actually gone. Already-dead resolves at once. */
+  waitForExit(timeoutMs = 6000): Promise<void> {
+    if (this.exited) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.off('exit', onExit);
+        reject(new Error(`Session "${this.id}" did not exit within ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      const onExit = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.once('exit', onExit);
+    });
+  }
+
   kill(): void {
     if (this.exited || this.disposed) return;
     this.killedByUser = true;
@@ -292,12 +389,29 @@ export class PtySession extends EventEmitter {
     }
   }
 
+  private broadcastControl(message: ViewerControl): void {
+    for (const viewer of this.viewers) {
+      try {
+        viewer.sendControl?.(message);
+      } catch {
+        this.viewers.delete(viewer);
+        this.focusedViewers.delete(viewer);
+      }
+    }
+  }
+
   private onExit(exitCode: number | null): void {
     if (this.exited) return;
     this.exited = true;
     this.clearKillTimer();
     this.info.exitCode = exitCode ?? undefined;
     this.engine.onExit(exitCode, { killed: this.killedByUser });
+    // Release the headless terminal emulator now that no more output can ever
+    // arrive. The ring buffer deliberately survives, so a stopped session still
+    // replays its scrollback; without this every corpse would keep a full
+    // emulator alive alongside it. `restart()` builds a fresh engine anyway, and
+    // `current` stays readable for `info`.
+    this.engine.dispose();
     this.emit('exit', exitCode);
   }
 
