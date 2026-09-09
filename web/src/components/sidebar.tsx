@@ -1,4 +1,4 @@
-import { BellOff, Plus, Settings, WifiOff } from 'lucide-react';
+import { BellOff, Plus, Settings, Smartphone, WifiOff } from 'lucide-react';
 
 import type { Session } from '../lib/types';
 import { cn } from '../lib/cn';
@@ -18,6 +18,15 @@ export interface SidebarProps {
    * times rather than only in a banner they can scroll past.
    */
   notificationsDeaf: boolean;
+  /**
+   * Offers installing agentmaster as an app, or `null` when it is already
+   * installed / not installable.
+   *
+   * It lives in the sidebar header rather than the session header or the key
+   * bar: at 393px both of those are size-critical, and this is a once-ever
+   * action that must not permanently cost a slot next to Kill.
+   */
+  install: { label: string; onClick: () => void } | null;
   onSelect: (id: string) => void;
   onNew: () => void;
   onOpenSettings: () => void;
@@ -31,6 +40,7 @@ export function Sidebar({
   connected,
   now,
   notificationsDeaf,
+  install,
   onClearFinished,
   onSelect,
   onNew,
@@ -53,6 +63,18 @@ export function Sidebar({
             className="rounded p-1.5 text-status-waiting transition-colors hover:bg-status-waiting/15 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
           >
             <BellOff className="size-4" />
+          </button>
+        )}
+
+        {install !== null && (
+          <button
+            type="button"
+            onClick={install.onClick}
+            title={install.label}
+            aria-label={install.label}
+            className="rounded p-1.5 text-base-400 transition-colors hover:bg-base-800 hover:text-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            <Smartphone className="size-4" />
           </button>
         )}
 

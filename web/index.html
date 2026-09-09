@@ -16,6 +16,27 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
     />
     <title>agentmaster</title>
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#101215" />
+
+    <!--
+      iOS ignores the manifest's `display` and `icons`. These three legacy tags
+      are the *only* reason "Add to Home Screen" produces a standalone app with
+      the right icon on an iPhone — and standalone is a hard prerequisite for
+      Web Push there, since Safari refuses to subscribe from a plain tab.
+
+      `black-translucent` lets the app paint under the status bar, which is what
+      `viewport-fit=cover` above is already set up to handle.
+    -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- The standardised spelling Chrome now wants; iOS still only reads the
+         `apple-` prefixed one, so both have to be here. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="agentmaster" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   </head>
   <body>
     <div id="root"></div>

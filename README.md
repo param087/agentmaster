@@ -80,7 +80,7 @@ npm rebuild node-pty better-sqlite3
 - **Needs attention** — amber sessions, longest-waiting first
 - **Quick actions** — when a session is blocked, its harness's answer buttons appear under the terminal. They send keystrokes; a click is indistinguishable from typing.
 - **Kill** stops the process but keeps the session listed, so its output stays readable. **Restart** re-runs the same harness in the same folder, reusing the session's slot and clearing the terminal. **Delete** forgets it for good, and **Clear** in the sidebar header forgets every stopped session at once.
-- **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Notifications work while the tab is open in the background; there is no service worker in v1.
+- **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Desktop notifications work while the tab is open in the background; **Web Push** (gear icon → Phone notifications) reaches you with the app closed.
 - `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
 
 ### Amber vs green
@@ -222,8 +222,31 @@ the browser requires an explicit grant. In order:
    session currently on screen in a focused tab — you can already see it. A
    background or minimised tab still notifies.
 
-Notifications only work while the dashboard tab is open. There is no service
-worker in v1, so a closed tab is silent.
+Notifications only work while the dashboard tab is open. To be told with the app
+closed — which is the only useful mode on a phone — turn on **Phone
+notifications (push)** in the gear dialog.
+
+## Push notifications on a phone
+
+Push is delivered by the server through your browser's push service, so a
+blocked session reaches you with agentmaster closed. Gear icon → **Phone
+notifications** → **Enable on this device**, then **Send test push** to prove
+delivery. The dialog shows how many devices the server is pushing to; if that
+stays at 0, the phone did not register.
+
+**On an iPhone there is one extra step, and it is mandatory.** Safari only
+permits Web Push for sites added to the Home Screen (iOS 16.4+) — a normal tab
+can never receive a push, whatever you allow. So:
+
+1. Open agentmaster in Safari over **HTTPS** (the Tailscale hostname; a plain
+   `http://` LAN address is not a secure context and has no push at all)
+2. Tap **Share** → **Add to Home Screen**
+3. Launch agentmaster **from the Home Screen icon**, not from Safari
+4. Gear icon → **Enable on this device** → allow notifications
+
+Settings detects the tab case and shows these steps instead of a button that
+cannot work. Note that iOS forgets everything if you delete the Home Screen
+icon: you have to enable push again after re-adding it.
 
 ## Commands
 
@@ -248,8 +271,9 @@ server/src/
   ws/                     /ws/events (JSON), /ws/term/:id (binary)
   routes/                 REST
 web/src/
-  hooks/                  use-terminal, use-events, use-notifications
+  hooks/                  use-terminal, use-events, use-notifications, use-push
   components/             shell, sidebar, attention queue, terminal, quick actions
+web/public/               PWA manifest, icons, push service worker
 ```
 
 ## Design notes
@@ -266,5 +290,11 @@ left open on boot is marked exited.
 
 ## Not in v1
 
-Mobile/PWA, remote access, web push, auth, multi-user, session persistence
-across restarts, cost tracking.
+Remote access, auth, multi-user, session persistence across restarts, cost
+tracking.
+
+**The service worker deliberately caches nothing.** The app is a live mirror of
+PTYs on a server it must be talking to, so there is no offline story worth
+having — and a cached bundle outliving a server upgrade would give you an old
+client speaking to a new API, which fails far more confusingly than "the server
+is down".

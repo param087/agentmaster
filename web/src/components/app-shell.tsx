@@ -15,12 +15,14 @@ import { api, ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
+import type { UsePushResult } from '../hooks/use-push';
 import { TERM_COLS, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal';
 import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
 import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
 import { basename, formatElapsed } from './session-row';
+import { ConfirmDialog } from './confirm-dialog';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
@@ -66,6 +68,7 @@ export interface AppShellProps {
   connected: boolean;
   onSelect: (id: string) => void;
   notifications: UseNotificationsResult;
+  push: UsePushResult;
 }
 
 export function AppShell({
@@ -74,6 +77,7 @@ export function AppShell({
   connected,
   onSelect,
   notifications,
+  push,
 }: AppShellProps) {
   const now = useClock();
   const narrow = useIsNarrow();
@@ -118,6 +122,17 @@ export function AppShell({
   useEffect(() => setPtyDims(null), [selectedId]);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * The one pending confirmation, or null. A single slot rather than a flag per
+   * action: only one dialog can ever be up, and this keeps the wiring honest.
+   */
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    destructive?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
@@ -181,17 +196,26 @@ export function AppShell({
   const clearFinished = (): void => {
     const count = sessions.filter((s) => isTerminalStatus(s.status)).length;
     if (count === 0) return;
-    const ok = window.confirm(
-      `Forget ${count} stopped session${count === 1 ? '' : 's'}? Their output will be discarded.`,
-    );
-    if (ok) runAction(api.removeFinished().then(() => undefined));
+    setConfirm({
+      title: `Clear ${count} stopped session${count === 1 ? '' : 's'}?`,
+      body: 'Their output will be discarded. Running sessions are left alone.',
+      confirmLabel: 'Clear',
+      destructive: true,
+      onConfirm: () => runAction(api.removeFinished().then(() => undefined)),
+    });
   };
 
   const remove = (session: Session): void => {
-    // Removing discards the scrollback for good, so it is the one destructive
-    // button in the app and the only one that asks.
-    const ok = window.confirm(`Remove "${session.title}"? Its output will be discarded.`);
-    if (ok) runAction(api.removeSession(session.id));
+    // Removing discards the scrollback for good, so it is the one action that
+    // destroys something unrecoverable.
+    setMenuOpen(false);
+    setConfirm({
+      title: isTerminalStatus(session.status) ? 'Delete session?' : 'Remove session?',
+      body: `"${session.title}" and its output will be discarded. This cannot be undone.`,
+      confirmLabel: isTerminalStatus(session.status) ? 'Delete' : 'Remove',
+      destructive: true,
+      onConfirm: () => runAction(api.removeSession(session.id)),
+    });
   };
 
   /**
@@ -208,12 +232,14 @@ export function AppShell({
       setActionError('Terminal is not ready to measure yet');
       return;
     }
-    const ok = window.confirm(
-      `Resize this session's terminal to ${plan.cols}×${plan.rows}?\n\n` +
-        'This resizes the real PTY, so it affects everyone watching this ' +
-        'session — any other open viewer will reflow to the same size.',
-    );
-    if (ok) setPtyDims(plan);
+    setConfirm({
+      title: `Resize terminal to ${plan.cols}×${plan.rows}?`,
+      body:
+        'This resizes the real PTY, so it affects everyone watching this session — ' +
+        'any other open viewer will reflow to the same size.',
+      confirmLabel: 'Resize',
+      onConfirm: () => setPtyDims(plan),
+    });
   };
 
   const resetPtySize = (): void => {
@@ -238,6 +264,25 @@ export function AppShell({
   const notificationsDeaf =
     notifications.supported && (notifications.permission !== 'granted' || notifications.muted.waiting);
 
+  /**
+   * The install affordance, or null when there is nothing to offer.
+   *
+   * Chrome hands us a real prompt via `beforeinstallprompt`. iOS never does —
+   * there is no API at all — so the only honest option there is to open Settings
+   * and show the Share → Add to Home Screen steps.
+   */
+  const install: { label: string; onClick: () => void } | null = push.promptInstall
+    ? { label: 'Install agentmaster as an app', onClick: () => void push.promptInstall?.() }
+    : push.needsInstall
+      ? {
+          label: 'Add to Home Screen to get notifications on this phone',
+          onClick: () => {
+            setDrawerOpen(false);
+            setSettingsOpen(true);
+          },
+        }
+      : null;
+
   const sidebar = (
     <Sidebar
       sessions={sessions}
@@ -246,6 +291,7 @@ export function AppShell({
       now={now}
       onSelect={narrow ? selectFromDrawer : onSelect}
       notificationsDeaf={notificationsDeaf}
+      install={install}
       onNew={() => {
         setDrawerOpen(false);
         setNewOpen(true);
@@ -533,6 +579,20 @@ export function AppShell({
         />
       )}
 
+      {confirm !== null && (
+        <ConfirmDialog
+          title={confirm.title}
+          body={confirm.body}
+          confirmLabel={confirm.confirmLabel}
+          destructive={confirm.destructive ?? false}
+          onConfirm={() => {
+            confirm.onConfirm();
+            setConfirm(null);
+          }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+
       {settingsOpen && (
         <SettingsDialog
           supported={notifications.supported}
@@ -541,6 +601,7 @@ export function AppShell({
           onSendTest={notifications.sendTest}
           muted={notifications.muted}
           onChangeMuted={notifications.setMuted}
+          push={push}
           onClose={() => setSettingsOpen(false)}
         />
       )}
