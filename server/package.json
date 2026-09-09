@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@xterm/headless": "^5.5.0",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^13.0.3",
     "express": "^4.21.2",
     "nanoid": "^5.0.9",
     "node-pty": "^1.0.0",

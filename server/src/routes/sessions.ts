@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import type { SessionManager } from '../session/manager.js';
+import { expandPath } from './fs.js';
 
 /** An `Error` carrying the HTTP status the central middleware should use. */
 export interface HttpError extends Error {
@@ -44,7 +45,10 @@ export function sessionsRouter(manager: SessionManager): Router {
     try {
       // `create` throws for an unknown harness id, a missing cwd, or a failed
       // spawn — all of them are the caller's fault, so they are 400s, not 500s.
-      res.status(201).json({ session: manager.create(parsed.data) });
+      // `cwd` goes through the same tilde expansion as /api/fs/ls, so a path
+      // copied out of the folder picker is accepted here too.
+      const input = { ...parsed.data, cwd: expandPath(parsed.data.cwd) };
+      res.status(201).json({ session: manager.create(input) });
     } catch (error) {
       next(httpError(400, error instanceof Error ? error.message : String(error)));
     }
