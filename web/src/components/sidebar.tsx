@@ -1,4 +1,4 @@
-import { Plus, Settings, WifiOff } from 'lucide-react';
+import { BellOff, Plus, Settings, WifiOff } from 'lucide-react';
 
 import type { Session } from '../lib/types';
 import { cn } from '../lib/cn';
@@ -11,6 +11,12 @@ export interface SidebarProps {
   connected: boolean;
   /** Shared clock from `AppShell` — one interval drives every relative timestamp. */
   now: number;
+  /**
+   * Permission is not granted, or `waiting` is muted — either way the user will
+   * not be told when a session needs them, and that must be visible at all
+   * times rather than only in a banner they can scroll past.
+   */
+  notificationsDeaf: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
   onOpenSettings: () => void;
@@ -21,6 +27,7 @@ export function Sidebar({
   selectedId,
   connected,
   now,
+  notificationsDeaf,
   onSelect,
   onNew,
   onOpenSettings,
@@ -31,6 +38,18 @@ export function Sidebar({
         <h1 className="flex-1 truncate text-[13px] font-semibold tracking-tight text-base-100">
           agent<span className="text-accent">master</span>
         </h1>
+
+        {notificationsDeaf && (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            title="You will not be told when a session needs you. Click to fix."
+            aria-label="Notifications are off — open settings"
+            className="rounded p-1.5 text-status-waiting transition-colors hover:bg-status-waiting/15 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            <BellOff className="size-4" />
+          </button>
+        )}
 
         <button
           type="button"

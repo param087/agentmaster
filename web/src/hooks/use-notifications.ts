@@ -14,10 +14,19 @@ export type MuteSettings = Record<NotifyKind, boolean>;
 
 export const NOTIFY_KINDS: readonly NotifyKind[] = ['waiting', 'done', 'exited', 'error'];
 
-const MUTES_KEY = 'agentmaster.mutes';
+/**
+ * v2 of the mutes key.
+ *
+ * The v1 key is **not** migrated. Real installs accumulated
+ * `{"waiting":false,"done":true,"error":true}` during testing, which silently
+ * muted two thirds of the alerts this tool exists to deliver. Carrying that
+ * forward would preserve the bug, so v1 is deleted and everyone starts from
+ * "nothing muted".
+ */
+const MUTES_KEY = 'agentmaster.mutes.v2';
 
-/** Pre-rename name of the `done` kind, still sitting in existing localStorage. */
-const LEGACY_DONE_KEY = 'finished';
+/** Discarded on sight, never read. See `MUTES_KEY`. */
+const LEGACY_MUTES_KEY = 'agentmaster.mutes';
 
 /** Nothing is muted by default: the tool is useless if it stays quiet. */
 export const DEFAULT_MUTES: MuteSettings = {
@@ -28,11 +37,11 @@ export const DEFAULT_MUTES: MuteSettings = {
 };
 
 /**
- * Reads persisted mutes, tolerating the pre-rename `finished` key.
+ * Reads persisted v2 mutes.
  *
  * Anything unrecognised or malformed falls back to the default for that kind
  * rather than throwing — a stale value in storage must never break the app on
- * boot. The migrated shape is written back on the next `setMuted`.
+ * boot, and the default is always the noisier, safer direction.
  */
 export function parseMutes(parsed: unknown): MuteSettings {
   if (typeof parsed !== 'object' || parsed === null) return { ...DEFAULT_MUTES };
@@ -40,14 +49,7 @@ export function parseMutes(parsed: unknown): MuteSettings {
   const out = { ...DEFAULT_MUTES };
   for (const kind of NOTIFY_KINDS) {
     const value = record[kind];
-    if (typeof value === 'boolean') {
-      out[kind] = value;
-      continue;
-    }
-    if (kind === 'done') {
-      const legacy = record[LEGACY_DONE_KEY];
-      if (typeof legacy === 'boolean') out.done = legacy;
-    }
+    if (typeof value === 'boolean') out[kind] = value;
   }
   return out;
 }
@@ -72,6 +74,13 @@ export interface UseNotificationsResult {
   request: () => Promise<void>;
   muted: MuteSettings;
   setMuted: (mutes: MuteSettings) => void;
+  /**
+   * Fires a real notification immediately, bypassing mutes and the active-session
+   * rule. The only way to prove end-to-end delivery — permission can read
+   * `granted` while the OS still swallows everything (Do Not Disturb, focus
+   * modes, a per-app switch in System Settings).
+   */
+  sendTest: () => void;
 }
 
 /**
@@ -103,10 +112,11 @@ export function useNotifications(
   const permissionRef = useRef(permission);
   permissionRef.current = permission;
 
-  // Rewrite storage once on mount so the legacy `finished` key does not linger
-  // forever for a user who never opens Settings again.
+  // Drop the v1 key on mount and write the v2 shape, so a polluted legacy value
+  // cannot be resurrected by an older build and nobody stays silently deaf.
   useEffect(() => {
     try {
+      window.localStorage.removeItem(LEGACY_MUTES_KEY);
       window.localStorage.setItem(MUTES_KEY, JSON.stringify(mutedRef.current));
     } catch {
       // Storage failures cost the user their preference on reload, nothing more.
@@ -153,5 +163,17 @@ export function useNotifications(
     };
   }, [lastNotification]);
 
-  return { supported: supported(), permission, request, muted, setMuted };
+  const sendTest = useCallback((): void => {
+    if (!supported() || Notification.permission !== 'granted') return;
+    const notification = new Notification('agentmaster test', {
+      body: 'Notifications are working. This is what a blocked session looks like.',
+      tag: 'agentmaster.test',
+    });
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
+  }, []);
+
+  return { supported: supported(), permission, request, muted, setMuted, sendTest };
 }

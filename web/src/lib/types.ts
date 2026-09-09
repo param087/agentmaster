@@ -18,7 +18,30 @@ export type SessionStatus =
   | 'killed'
   | 'error';
 
-export type WaitKind = 'permission' | 'question' | 'menu' | 'unknown';
+/**
+ * Why a session is amber.
+ *
+ * `permission` / `question` / `menu` come from a harness rule: the CLI is
+ * *modally blocked* and cannot continue without you. They clear only when the
+ * harness itself moves on — looking at the screen does not unblock it.
+ *
+ * `turn` is the regex-free generic case: you submitted something, it produced
+ * output, it went quiet. It is an unread marker, so looking at it clears it —
+ * and `matchedRule` / `actions` are both unset, which is the discriminator.
+ */
+export type WaitKind = 'permission' | 'question' | 'menu' | 'turn' | 'unknown';
+
+/** Modal kinds: the harness is stuck and viewing the session will not clear it. */
+export const MODAL_WAIT_KINDS: ReadonlySet<WaitKind> = new Set<WaitKind>([
+  'permission',
+  'question',
+  'menu',
+]);
+
+/** True when the session is jammed on a prompt, rather than just "your move". */
+export function isModalWait(kind: WaitKind | undefined): boolean {
+  return kind !== undefined && MODAL_WAIT_KINDS.has(kind);
+}
 
 export interface QuickAction {
   label: string;

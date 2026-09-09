@@ -1,5 +1,27 @@
 import type { Session } from '../lib/types';
+import { isModalWait } from '../lib/types';
 import { SessionRow } from './session-row';
+
+/**
+ * Every amber session, most urgent first.
+ *
+ * Two orderings, in this priority:
+ *
+ * 1. Modal kinds (`permission` / `menu` / `question`) above `turn`. A jammed
+ *    harness is burning wall-clock doing nothing; a finished turn is only
+ *    waiting on you to read it.
+ * 2. Oldest first within each group — a session blocked for ten minutes is more
+ *    urgent than one blocked for two seconds, and sorting the other way would
+ *    bury it.
+ */
+export function attentionOrder(sessions: Session[]): Session[] {
+  return sessions
+    .filter((s) => s.status === 'waiting_input')
+    .sort((a, b) => {
+      const rank = Number(isModalWait(b.waitKind)) - Number(isModalWait(a.waitKind));
+      return rank !== 0 ? rank : a.statusChangedAt - b.statusChangedAt;
+    });
+}
 
 export interface AttentionQueueProps {
   sessions: Session[];
@@ -8,17 +30,8 @@ export interface AttentionQueueProps {
   onSelect: (id: string) => void;
 }
 
-/**
- * Sessions blocked on the user, longest-waiting first.
- *
- * Ascending `statusChangedAt` is the entire point of this panel: a session that
- * has been blocked for ten minutes is more urgent than one blocked for two
- * seconds, and sorting the other way would bury it.
- */
 export function AttentionQueue({ sessions, selectedId, now, onSelect }: AttentionQueueProps) {
-  const waiting = sessions
-    .filter((s) => s.status === 'waiting_input')
-    .sort((a, b) => a.statusChangedAt - b.statusChangedAt);
+  const waiting = attentionOrder(sessions);
 
   if (waiting.length === 0) return null;
 

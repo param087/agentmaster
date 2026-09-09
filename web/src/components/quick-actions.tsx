@@ -7,6 +7,9 @@ const WAIT_KIND_LABEL: Record<WaitKind, string> = {
   permission: 'permission',
   question: 'question',
   menu: 'menu',
+  // Never rendered in practice: `turn` carries no rule, so it carries no
+  // actions either, and this component returns null without any.
+  turn: 'your turn',
   unknown: 'input',
 };
 

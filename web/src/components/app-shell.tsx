@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bell, Skull, Trash2 } from 'lucide-react';
+import { BellOff, Skull, Trash2 } from 'lucide-react';
 
 import type { Session } from '../lib/types';
 import { api, ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
+import { attentionOrder } from './attention-queue';
 import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
 import { basename, formatElapsed } from './session-row';
@@ -70,20 +71,13 @@ export function AppShell({
     setTerminalSend(() => send);
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [permissionBannerHidden, setPermissionBannerHidden] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
 
-  const waiting = useMemo(
-    () =>
-      sessions
-        .filter((s) => s.status === 'waiting_input')
-        .sort((a, b) => a.statusChangedAt - b.statusChangedAt),
-    [sessions],
-  );
+  const waiting = useMemo(() => attentionOrder(sessions), [sessions]);
 
-  /** Cycles through the attention queue, longest-waiting first. */
+  /** Cycles through the attention queue in the same order the sidebar shows. */
   const cycleAttention = useCallback((): void => {
     if (waiting.length === 0) return;
     const index = waiting.findIndex((s) => s.id === selectedId);
@@ -124,8 +118,14 @@ export function AppShell({
     if (ok) runAction(api.removeSession(session.id));
   };
 
-  const showPermissionBanner =
-    notifications.supported && notifications.permission === 'default' && !permissionBannerHidden;
+  // Deliberately not dismissible. The original bug was six correct detections
+  // producing zero notifications because this banner had been dismissed and
+  // never thought about again; a nagging strip is cheaper than a missed prompt.
+  const showPermissionBanner = notifications.supported && notifications.permission === 'default';
+
+  // Either half means the user will not hear about a blocked session.
+  const notificationsDeaf =
+    notifications.supported && (notifications.permission !== 'granted' || notifications.muted.waiting);
 
   return (
     <div className="flex h-full bg-base-950 text-base-100">
@@ -135,28 +135,27 @@ export function AppShell({
         connected={connected}
         now={now}
         onSelect={onSelect}
+        notificationsDeaf={notificationsDeaf}
         onNew={() => setNewOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
         {showPermissionBanner && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-base-800 bg-base-900 px-4 py-1.5 text-[11px] text-base-300">
-            <Bell className="size-3.5 shrink-0 text-status-waiting" />
-            Turn on desktop notifications so you hear about blocked sessions.
+          <div className="flex shrink-0 items-center gap-2 border-b border-status-waiting/30 bg-status-waiting/10 px-4 py-1.5 text-[11px] text-status-waiting">
+            <BellOff className="size-3.5 shrink-0" />
+            {/* Worded as the consequence, not the setting: "notifications are
+                off" is ignorable, "you will not be told" is not. */}
+            <span className="font-medium">Notifications are off</span>
+            <span className="text-base-300">
+              — you will not be told when a session needs you.
+            </span>
             <button
               type="button"
               onClick={() => void notifications.request()}
-              className="rounded border border-accent-dim bg-accent/15 px-1.5 py-0.5 text-accent transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              className="ml-auto rounded border border-accent-dim bg-accent/15 px-1.5 py-0.5 text-accent transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
               Enable
-            </button>
-            <button
-              type="button"
-              onClick={() => setPermissionBannerHidden(true)}
-              className="ml-auto rounded px-1.5 py-0.5 text-base-500 transition-colors hover:text-base-200"
-            >
-              Dismiss
             </button>
           </div>
         )}
@@ -245,6 +244,7 @@ export function AppShell({
           supported={notifications.supported}
           permission={notifications.permission}
           onRequestPermission={() => void notifications.request()}
+          onSendTest={notifications.sendTest}
           muted={notifications.muted}
           onChangeMuted={notifications.setMuted}
           onClose={() => setSettingsOpen(false)}

@@ -1,9 +1,24 @@
 import { AlertTriangle } from 'lucide-react';
 
-import type { Session } from '../lib/types';
+import type { Session, WaitKind } from '../lib/types';
+import { isModalWait } from '../lib/types';
 import { cn } from '../lib/cn';
 import { HarnessIcon } from './harness-icon';
 import { StatusDot } from './status-dot';
+
+/**
+ * How each amber flavour reads in a 280px column.
+ *
+ * `turn` is phrased as an instruction rather than a state because it is the one
+ * the user can clear just by looking.
+ */
+export const WAIT_KIND_SUBTITLE: Record<WaitKind, string> = {
+  permission: 'permission',
+  question: 'question',
+  menu: 'menu',
+  turn: 'your turn',
+  unknown: 'input',
+};
 
 /** Last path segment, with `/` and `~` surviving as themselves. */
 export function basename(path: string): string {
@@ -54,6 +69,10 @@ export function SessionRow({
   onSelect,
 }: SessionRowProps) {
   const waiting = session.status === 'waiting_input';
+  // The ⚠ is reserved for *modal* kinds so "jammed on a prompt" stays visually
+  // distinct from "your move". Both are amber; only one is stuck.
+  const modal = waiting && isModalWait(session.waitKind);
+  const kindLabel = waiting ? WAIT_KIND_SUBTITLE[session.waitKind ?? 'unknown'] : null;
   const label = basename(session.cwd);
 
   // The rule lives in the tooltip everywhere, so a bad regex is always one hover
@@ -91,8 +110,17 @@ export function SessionRow({
         </span>
         <span className="block truncate text-[11px] text-base-400">
           {session.harnessName} · {formatElapsed(session.statusChangedAt, now)}
+          {kindLabel !== null && (
+            <>
+              {' · '}
+              <span className={cn(modal ? 'text-status-waiting' : 'text-base-300')}>
+                {kindLabel}
+              </span>
+            </>
+          )}
           {/* Appended to the existing line, never a new one: the rule can appear
-              and disappear with a status change without moving anything. */}
+              and disappear with a status change without moving anything.
+              `turn` has no rule at all, so nothing is rendered for it. */}
           {showMatchedRule && session.matchedRule !== undefined && (
             <>
               {' · '}
@@ -102,9 +130,9 @@ export function SessionRow({
         </span>
       </span>
 
-      {waiting && (
+      {modal && (
         <AlertTriangle
-          aria-label="Waiting for input"
+          aria-label="Blocked, waiting for input"
           className="size-3.5 shrink-0 text-status-waiting"
         />
       )}

@@ -44,12 +44,36 @@ const TERMINAL_THEME = {
   brightWhite: '#f5f7f9',
 } as const;
 
+/**
+ * How long alt-tabbing must settle before a focus frame goes out.
+ *
+ * Switching windows fires `blur` then `visibilitychange` then `focus` in quick
+ * succession; without this the server would see a burst of contradictory
+ * frames for a single user action.
+ */
+const FOCUS_DEBOUNCE_MS = 150;
+
+/** A control message on the terminal socket. Sent as a TEXT frame, never binary. */
+export type TerminalControlMessage = { type: 'focus'; focused: boolean };
+
 export interface UseTerminalResult {
   containerRef: React.RefObject<HTMLDivElement | null>;
   connected: boolean;
   error: string | null;
   /** Writes verbatim to the PTY, exactly as if typed. Used by quick actions. */
   send: (data: string) => void;
+  /** Sends a JSON control message. Never reaches the PTY. */
+  sendControl: (message: TerminalControlMessage) => void;
+}
+
+/**
+ * Whether the user can actually see this tab.
+ *
+ * Both halves matter: a visible tab in an unfocused window is not being looked
+ * at, and that is exactly the case that used to auto-acknowledge alerts.
+ */
+function isViewerFocused(): boolean {
+  return document.visibilityState === 'visible' && document.hasFocus();
 }
 
 function terminalUrl(sessionId: string): string {
@@ -125,6 +149,43 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     let attempts = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
+    // ---- focus reporting -------------------------------------------------
+    //
+    // The server treats a session as unwatched until a `focused: true` arrives,
+    // which is the safe default: an unwatched session keeps its amber alert
+    // instead of being silently acknowledged by a background tab.
+    let focusTimer: ReturnType<typeof setTimeout> | undefined;
+    // `undefined` (not `false`) so the first push always transmits — the socket
+    // starts unfocused server-side and we must not suppress the opening `true`.
+    let reportedFocus: boolean | undefined;
+
+    /** Sends a TEXT frame. Binary is reserved for keystrokes. */
+    const sendControlFrame = (message: TerminalControlMessage): void => {
+      const ws = socketRef.current;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+    };
+
+    const pushFocus = (): void => {
+      if (cancelled) return;
+      const focused = isViewerFocused();
+      if (focused === reportedFocus) return;
+      const ws = socketRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      reportedFocus = focused;
+      sendControlFrame({ type: 'focus', focused });
+    };
+
+    const scheduleFocusPush = (): void => {
+      if (focusTimer !== undefined) clearTimeout(focusTimer);
+      focusTimer = setTimeout(pushFocus, FOCUS_DEBOUNCE_MS);
+    };
+
+    // `visibilitychange` only fires on `document`; `focus`/`blur` do not bubble
+    // to `document`, so both targets are needed.
+    document.addEventListener('visibilitychange', scheduleFocusPush);
+    window.addEventListener('focus', scheduleFocusPush);
+    window.addEventListener('blur', scheduleFocusPush);
+
     const connect = (): void => {
       if (cancelled) return;
 
@@ -137,6 +198,10 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
         attempts = 0;
         setConnected(true);
         setError(null);
+        // A fresh socket is unfocused server-side regardless of what the last
+        // one reported, so forget the previous value before pushing.
+        reportedFocus = undefined;
+        pushFocus();
       };
 
       ws.onmessage = (event: MessageEvent<unknown>) => {
@@ -176,10 +241,17 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     return () => {
       cancelled = true;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
+      if (focusTimer !== undefined) clearTimeout(focusTimer);
+
+      document.removeEventListener('visibilitychange', scheduleFocusPush);
+      window.removeEventListener('focus', scheduleFocusPush);
+      window.removeEventListener('blur', scheduleFocusPush);
 
       const ws = socketRef.current;
       socketRef.current = null;
       if (ws) {
+        // Closing the socket detaches the viewer server-side, which clears its
+        // focus too — so an explicit `focused: false` here would be redundant.
         // Drop handlers first so a close during teardown cannot schedule a retry.
         ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
         ws.close();
@@ -193,10 +265,18 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     };
   }, [sessionId]);
 
+  // Keystrokes are BINARY. A string here would be read as a control message by
+  // the server and silently dropped, so the user's typing would vanish.
   const send = useCallback((data: string): void => {
     const ws = socketRef.current;
     if (ws?.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
   }, []);
 
-  return { containerRef, connected, error, send };
+  // Control messages are TEXT. Never routed to the PTY.
+  const sendControl = useCallback((message: TerminalControlMessage): void => {
+    const ws = socketRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+  }, []);
+
+  return { containerRef, connected, error, send, sendControl };
 }
