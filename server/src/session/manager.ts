@@ -49,9 +49,11 @@ export class SessionManager {
   private readonly map = new Map<string, PtySession>();
   private readonly lastNotified = new Map<string, number>();
   private readonly onProcessExit = (): void => this.killAll();
+  // Kill sessions but do NOT call process.exit here. This handler is registered
+  // at construction, so exiting synchronously would preempt the HTTP server's
+  // graceful shutdown. Whoever owns the process lifecycle decides when to exit.
   private readonly onSignal = (): void => {
     this.killAll();
-    process.exit(0);
   };
   private processHandlersInstalled = false;
   private disposed = false;

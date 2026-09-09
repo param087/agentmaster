@@ -1,4 +1,12 @@
-import { Terminal } from '@xterm/headless';
+// @xterm/headless ships a CJS UMD bundle with no ESM export map, so Node's
+// cjs-module-lexer cannot statically detect the `Terminal` named export and a
+// named import throws at load time under plain node/tsx. Vite/Vitest papers
+// over this with its own interop, which is why the test suite never sees it.
+// Default-import then destructure works in both.
+import xtermHeadless from '@xterm/headless';
+import type { Terminal as TerminalType } from '@xterm/headless';
+
+const { Terminal } = xtermHeadless;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
@@ -14,7 +22,7 @@ const SCROLLBACK = 200;
  * the only way to see what the user actually sees.
  */
 export class ScreenModel {
-  private readonly term: Terminal;
+  private readonly term: TerminalType;
 
   constructor(cols: number = DEFAULT_COLS, rows: number = DEFAULT_ROWS) {
     this.term = new Terminal({ cols, rows, allowProposedApi: true, scrollback: SCROLLBACK });

@@ -152,6 +152,11 @@ export class PtySession extends EventEmitter {
     this.viewers.add(viewer);
   }
 
+  /** Number of attached viewers. Exposed so leaked detaches are directly testable. */
+  get viewerCount(): number {
+    return this.viewers.size;
+  }
+
   detach(viewer: SessionViewer): void {
     this.viewers.delete(viewer);
   }
