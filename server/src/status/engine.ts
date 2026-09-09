@@ -12,8 +12,8 @@ export interface StatusSnapshot {
   status: SessionStatus;
   waitKind?: WaitKind;
   actions?: QuickAction[];
-  /** Only meaningful on `idle`: the session was busy for a long stretch first. */
-  finished?: boolean;
+  /** Source text of the waiting rule that fired. Only set on `waiting_input`. */
+  matchedRule?: string;
   exitCode?: number;
   /** Timestamp of the transition. */
   at: number;
@@ -36,9 +36,12 @@ type TimerHandle = ReturnType<typeof setTimeout>;
  *
  * ```
  * starting --(first output)--> busy
- * busy --(idleMs of silence)--> waiting_input (a rule matches) | idle
- * waiting_input|idle --(any output)--> busy
- * any --(exit)--> exited (0/null) | error
+ * busy --(idleMs of silence)--> waiting_input (a rule matches)
+ *                             | done (was busy > finishedAfterBusyMs)
+ *                             | idle
+ * waiting_input|idle|done --(any output)--> busy
+ * done --(acknowledge)--> idle
+ * any --(exit)--> killed (user) | error (non-zero) | exited
  * ```
  *
  * Detection runs against the *rendered* screen (see {@link ScreenModel}), never
@@ -92,9 +95,31 @@ export class StatusEngine extends EventEmitter {
     this.armIdleTimer();
   }
 
-  onExit(exitCode: number | null): void {
+  /**
+   * Marks a `done` session as seen, dropping it back to `idle`.
+   *
+   * A no-op (and silent) in every other status, so callers can fire it
+   * unconditionally when a viewer opens a session.
+   */
+  acknowledge(): void {
+    if (this.disposed) return;
+    if (this.snapshot.status !== 'done') return;
+    this.transition({ status: 'idle' });
+  }
+
+  /**
+   * Records process exit.
+   *
+   * `opts.killed` carries *intent* and is never inferred from `exitCode`: a
+   * SIGTERM'd process very often reports code 0, so reading the code would
+   * silently relabel every user-initiated kill as a clean exit.
+   */
+  onExit(exitCode: number | null, opts?: { killed?: boolean }): void {
     this.clearIdleTimer();
-    const status: SessionStatus = exitCode === null || exitCode === 0 ? 'exited' : 'error';
+    let status: SessionStatus;
+    if (opts?.killed) status = 'killed';
+    else if (exitCode !== null && exitCode !== 0) status = 'error';
+    else status = 'exited';
     const next: Omit<StatusSnapshot, 'at'> = { status };
     if (exitCode !== null) next.exitCode = exitCode;
     this.transition(next);
@@ -108,7 +133,8 @@ export class StatusEngine extends EventEmitter {
   }
 
   private isTerminal(): boolean {
-    return this.snapshot.status === 'exited' || this.snapshot.status === 'error';
+    const s = this.snapshot.status;
+    return s === 'exited' || s === 'error' || s === 'killed';
   }
 
   private armIdleTimer(): void {
@@ -137,16 +163,22 @@ export class StatusEngine extends EventEmitter {
 
     for (const rule of this.harness.waitingInput) {
       if (!rule.re.test(tail)) continue;
-      const next: Omit<StatusSnapshot, 'at'> = { status: 'waiting_input', waitKind: rule.kind };
+      const next: Omit<StatusSnapshot, 'at'> = {
+        status: 'waiting_input',
+        waitKind: rule.kind,
+        matchedRule: rule.re.source,
+      };
       if (rule.actions) next.actions = rule.actions;
       this.transition(next);
       return;
     }
 
-    const finished =
+    // A long stretch of work that has now gone quiet is a *finished task*, not
+    // mere quiet. `done` stays until someone acknowledges it.
+    const wasLongBusy =
       this.busySince !== undefined &&
       this.now() - this.busySince > this.harness.finishedAfterBusyMs;
-    this.transition({ status: 'idle', finished });
+    this.transition({ status: wasLongBusy ? 'done' : 'idle' });
   }
 
   private transition(next: Omit<StatusSnapshot, 'at'>): void {
@@ -154,7 +186,7 @@ export class StatusEngine extends EventEmitter {
     if (
       prev.status === next.status &&
       prev.waitKind === next.waitKind &&
-      Boolean(prev.finished) === Boolean(next.finished) &&
+      prev.matchedRule === next.matchedRule &&
       prev.exitCode === next.exitCode
     ) {
       return;

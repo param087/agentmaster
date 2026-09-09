@@ -132,25 +132,72 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input']);
   });
 
-  it('transitions to idle (not finished) when no rule matches', async () => {
+  it('transitions to idle when no rule matches and the busy stretch was short', async () => {
     const { engine: e, clock } = makeEngine();
     await e.onData('just some log output\r\n');
     clock.advance(2500);
     expect(e.current.status).toBe('idle');
-    expect(e.current.finished).toBeFalsy();
     expect(e.current.waitKind).toBeUndefined();
   });
 
-  it('marks idle as finished after a long busy stretch', async () => {
-    const { engine: e, clock } = makeEngine();
+  it('transitions to done after a busy stretch longer than finishedAfterBusyMs', async () => {
+    const { engine: e, clock, seen } = makeEngine();
     for (let i = 0; i < 11; i++) {
       await e.onData(`working ${i}\r\n`);
       clock.advance(2000); // below idleMs, so the timer never fires
     }
     expect(e.current.status).toBe('busy');
     clock.advance(2500);
+    expect(e.current.status).toBe('done');
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'done']);
+  });
+
+  it('acknowledge() on done emits idle', async () => {
+    const { engine: e, clock, seen } = makeEngine();
+    for (let i = 0; i < 11; i++) {
+      await e.onData(`working ${i}\r\n`);
+      clock.advance(2000);
+    }
+    clock.advance(2500);
+    expect(e.current.status).toBe('done');
+
+    e.acknowledge();
     expect(e.current.status).toBe('idle');
-    expect(e.current.finished).toBe(true);
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'done', 'idle']);
+  });
+
+  it('acknowledge() is a silent no-op when not done', async () => {
+    const { engine: e, seen } = makeEngine();
+    await e.onData('x');
+    expect(e.current.status).toBe('busy');
+
+    e.acknowledge();
+    e.acknowledge();
+    expect(e.current.status).toBe('busy');
+    expect(seen.map((s) => s.status)).toEqual(['busy']);
+  });
+
+  it('records the matching rule source on a waiting transition', async () => {
+    const { engine: e, clock } = makeEngine();
+    await e.onData('Do you want to proceed?\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('waiting_input');
+    expect(e.current.matchedRule).toBe('Do you want to proceed');
+  });
+
+  it('clears matchedRule when leaving waiting_input', async () => {
+    const { engine: e, clock } = makeEngine();
+    await e.onData('Do you want to proceed?\r\n');
+    clock.advance(2500);
+    expect(e.current.matchedRule).toBe('Do you want to proceed');
+
+    await e.onData('\x1b[2J\x1b[Hcarrying on\r\n');
+    expect(e.current.status).toBe('busy');
+    expect(e.current.matchedRule).toBeUndefined();
+
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+    expect(e.current.matchedRule).toBeUndefined();
   });
 
   it('honours waiting rule order — first match wins', async () => {
@@ -202,6 +249,25 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input', 'busy']);
   });
 
+  it('reports killed when the exit was user-initiated, whatever the code', async () => {
+    const { engine: e, seen } = makeEngine();
+    await e.onData('x');
+    // Exit code 0 on a SIGTERM is the norm, so intent must come from the caller.
+    e.onExit(0, { killed: true });
+    expect(e.current.status).toBe('killed');
+    expect(e.current.exitCode).toBe(0);
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'killed']);
+  });
+
+  it('treats killed as terminal, ignoring later data', async () => {
+    const { engine: e, seen } = makeEngine();
+    await e.onData('x');
+    e.onExit(null, { killed: true });
+    await e.onData('late flushed bytes');
+    expect(e.current.status).toBe('killed');
+    expect(seen.map((s) => s.status)).toEqual(['busy', 'killed']);
+  });
+
   it('maps exit codes to exited / error', async () => {
     const zero = makeEngine();
     await zero.engine.onData('x');
@@ -221,6 +287,14 @@ describe('StatusEngine', () => {
     await nul.engine.onData('x');
     nul.engine.onExit(null);
     expect(nul.engine.current.status).toBe('exited');
+  });
+
+  it('does not infer killed from a non-zero code, nor error from killed', async () => {
+    const { engine: e } = makeEngine();
+    await e.onData('x');
+    e.onExit(1, { killed: true });
+    expect(e.current.status).toBe('killed');
+    expect(e.current.exitCode).toBe(1);
   });
 
   it('ignores data arriving after exit', async () => {

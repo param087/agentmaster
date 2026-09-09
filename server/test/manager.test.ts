@@ -241,7 +241,7 @@ describe('PtySession status', () => {
   );
 
   it(
-    'emits exit and reaches a terminal status on kill()',
+    'reports killed, not exited, when the user kills the session',
     async () => {
       const m = newManager();
       const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
@@ -251,9 +251,78 @@ describe('PtySession status', () => {
       await sleep(200);
       session.kill();
       await exited;
-      await waitFor(() => session.info.status === 'exited' || session.info.status === 'error');
+      await waitFor(() => session.info.status === 'killed');
 
+      // SIGTERM commonly yields exit code 0; only intent distinguishes the two.
+      expect(session.info.status).toBe('killed');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'reports exited for a harness that ends on its own with code 0',
+    async () => {
+      const m = newManager(bashHarness({ args: ['-c', 'exit 0'] }));
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitFor(() => session.info.status === 'exited');
       expect(session.info.status).toBe('exited');
+      expect(session.info.exitCode).toBe(0);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'reports error for a non-zero exit',
+    async () => {
+      const m = newManager(bashHarness({ args: ['-c', 'exit 3'] }));
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitFor(() => session.info.status === 'error');
+      expect(session.info.status).toBe('error');
+      expect(session.info.exitCode).toBe(3);
+    },
+    PTY_TIMEOUT,
+  );
+});
+
+describe('done acknowledgement', () => {
+  it(
+    'flips a done session to idle when a viewer attaches',
+    async () => {
+      // finishedAfterBusyMs: 0 makes any busy stretch count as a finished task.
+      const m = newManager(bashHarness({ finishedAfterBusyMs: 0 }));
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+
+      await waitForStatus(session, 'done');
+      expect(session.info.status).toBe('done');
+
+      session.attach(new CollectingViewer());
+      expect(session.info.status).toBe('idle');
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'never emits done while a viewer is watching, emitting exactly one idle',
+    async () => {
+      const m = newManager(bashHarness({ finishedAfterBusyMs: 0 }));
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      session.attach(new CollectingViewer());
+
+      const seen: SessionStatus[] = [];
+      session.on('status', (s: { status: SessionStatus }) => seen.push(s.status));
+
+      await waitForStatus(session, 'idle');
+      await sleep(300);
+
+      expect(seen).not.toContain('done');
+      expect(seen.filter((s) => s === 'idle')).toHaveLength(1);
+      expect(session.info.status).toBe('idle');
     },
     PTY_TIMEOUT,
   );
@@ -329,11 +398,11 @@ describe('notifications', () => {
     const b = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
 
     a.emit('status', { status: 'waiting_input', waitKind: 'question', at: 0 });
-    a.emit('status', { status: 'idle', finished: true, at: 0 });
+    a.emit('status', { status: 'done', at: 0 });
     b.emit('status', { status: 'waiting_input', waitKind: 'question', at: 0 });
 
     const kinds = events.filter((e) => e.t === 'notify').map((e) => (e.t === 'notify' ? e.kind : ''));
-    expect(kinds).toEqual(['waiting', 'finished', 'waiting']);
+    expect(kinds).toEqual(['waiting', 'done', 'waiting']);
     clock += 0;
   });
 
@@ -350,13 +419,35 @@ describe('notifications', () => {
     expect(notify.body).toContain('137');
   });
 
-  it('does not notify for idle without finished', () => {
+  it('does not notify for plain idle', () => {
     const m = newManager();
     const events = collectEvents();
     const session = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
 
-    session.emit('status', { status: 'idle', finished: false, at: Date.now() });
+    session.emit('status', { status: 'idle', at: Date.now() });
     expect(events.filter((e) => e.t === 'notify')).toEqual([]);
+  });
+
+  it('does not notify for a killed session — the user just clicked the button', () => {
+    const m = newManager();
+    const events = collectEvents();
+    const session = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+
+    session.emit('status', { status: 'killed', exitCode: 0, at: Date.now() });
+    expect(events.filter((e) => e.t === 'notify')).toEqual([]);
+  });
+
+  it('persists done and killed to the events table', () => {
+    const m = newManager();
+    const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    const session = m.get(info.id)!;
+
+    session.emit('status', { status: 'done', at: 1 });
+    session.emit('status', { status: 'killed', exitCode: 0, at: 2 });
+
+    const statuses = db!.listEvents(info.id).map((e) => e.status);
+    expect(statuses).toContain('done');
+    expect(statuses).toContain('killed');
   });
 });
 

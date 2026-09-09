@@ -11,7 +11,7 @@ import { PtySession } from './session.js';
 /** Per (sessionId, kind) suppression window for desktop notifications. */
 const NOTIFY_COOLDOWN_MS = 30_000;
 
-type NotifyKind = 'waiting' | 'finished' | 'exited' | 'error';
+type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
 
 export interface CreateSessionInput {
   harnessId: string;
@@ -195,11 +195,12 @@ function describeNotification(
         title: `${harnessName} needs you`,
         body: `${where} · ${snapshot.waitKind ?? 'unknown'}`,
       };
-    case 'idle':
-      if (!snapshot.finished) return undefined;
-      return { kind: 'finished', title: `${harnessName} finished`, body: where };
+    case 'done':
+      return { kind: 'done', title: `${harnessName} finished`, body: where };
     case 'exited':
       return { kind: 'exited', title: `${harnessName} exited`, body: where };
+    // 'killed' is deliberately absent: the user just clicked Kill, so telling
+    // them it worked is pure noise.
     case 'error':
       return {
         kind: 'error',

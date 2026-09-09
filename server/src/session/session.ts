@@ -87,6 +87,10 @@ export class PtySession extends EventEmitter {
   private killTimer: NodeJS.Timeout | undefined;
   private exited = false;
   private disposed = false;
+  /** Intent, not inference: SIGTERM'd children routinely report exit code 0. */
+  private killedByUser = false;
+  /** Re-entrancy guard for acknowledging a `done` that arrived mid-emit. */
+  private acknowledging = false;
 
   constructor(opts: SessionOptions) {
     super();
@@ -147,9 +151,15 @@ export class PtySession extends EventEmitter {
     this.pty.write(typeof data === 'string' ? data : data.toString('utf8'));
   }
 
-  /** Adds a viewer. Replay is the caller's job — attach order is theirs to pick. */
+  /**
+   * Adds a viewer. Replay is the caller's job — attach order is theirs to pick.
+   *
+   * Opening a session counts as looking at it, so any pending `done` is
+   * acknowledged and the session drops back to `idle`.
+   */
   attach(viewer: SessionViewer): void {
     this.viewers.add(viewer);
+    this.engine.acknowledge();
   }
 
   /** Number of attached viewers. Exposed so leaked detaches are directly testable. */
@@ -173,6 +183,7 @@ export class PtySession extends EventEmitter {
   /** SIGTERM, escalating to SIGKILL if the process is still alive 3s later. */
   kill(): void {
     if (this.exited || this.disposed) return;
+    this.killedByUser = true;
     try {
       this.pty.kill('SIGTERM');
     } catch {
@@ -182,6 +193,7 @@ export class PtySession extends EventEmitter {
     this.killTimer = setTimeout(() => {
       this.killTimer = undefined;
       if (this.exited) return;
+      this.killedByUser = true;
       try {
         this.pty.kill('SIGKILL');
       } catch {
@@ -240,14 +252,32 @@ export class PtySession extends EventEmitter {
     this.exited = true;
     this.clearKillTimer();
     this.info.exitCode = exitCode ?? undefined;
-    this.engine.onExit(exitCode);
+    this.engine.onExit(exitCode, { killed: this.killedByUser });
     this.emit('exit', exitCode);
   }
 
   private onStatus(snapshot: StatusSnapshot): void {
+    // `done` means "finished, and you haven't looked yet". If someone is
+    // already watching, they *have* looked: swallow the transition rather than
+    // flashing green at a viewer who is staring straight at the output.
+    //
+    // `acknowledge()` re-enters this listener synchronously with the `idle`
+    // snapshot; the guard makes that inner call the one that publishes, and the
+    // outer `done` frame returns without emitting anything.
+    if (snapshot.status === 'done' && this.viewers.size > 0 && !this.acknowledging) {
+      this.acknowledging = true;
+      try {
+        this.engine.acknowledge();
+      } finally {
+        this.acknowledging = false;
+      }
+      return;
+    }
+
     this.info.status = snapshot.status;
     this.info.waitKind = snapshot.waitKind;
     this.info.actions = snapshot.actions;
+    this.info.matchedRule = snapshot.matchedRule;
     this.info.statusChangedAt = snapshot.at;
     if (snapshot.status === 'busy') {
       this.info.busySince ??= snapshot.at;
