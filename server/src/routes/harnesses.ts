@@ -13,6 +13,8 @@ export interface HarnessSummary {
   id: string;
   name: string;
   command: string;
+  /** Brand mark to draw. Always resolved, so the client never guesses. */
+  icon: string;
 }
 
 export function harnessesRouter(): Router {
@@ -23,6 +25,7 @@ export function harnessesRouter(): Router {
       id: h.id,
       name: h.name,
       command: h.command,
+      icon: h.icon ?? h.id,
     }));
     res.json({ harnesses });
   });

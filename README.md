@@ -139,9 +139,25 @@ Notes:
 
 ### Adding a harness
 
-Add an entry with `id`, `name`, `command`. That alone gives you a terminal and
-busy/idle/exited. Add `waiting_input` rules to get the attention queue,
-notifications, and quick actions.
+Add an entry with `id`, `name`, `command`. That alone gives you a terminal,
+busy/idle/exited, and generic turn-end detection. Add `waiting_input` rules to
+also catch modal prompts (menus, permissions) and get quick-action buttons.
+
+Harnesses we ship carry their official brand mark. Anything else gets a
+monochrome two-letter badge automatically. To reuse an existing mark — say for a
+fork or a renamed CLI — set `icon`:
+
+```yaml
+- id: my-claude-fork
+  name: My Claude Fork
+  command: myclaude
+  icon: claude-code
+```
+
+Icons are monochrome on purpose: in the sidebar, colour means *status*, and a
+brand palette beside the amber "needs you" dot would dilute the only signal that
+asks you to act. Marks are vendored from [simple-icons](https://simple-icons.org)
+(CC0-1.0); regenerate with `npm run icons:sync`.
 
 ## Verifying detection against a real CLI
 

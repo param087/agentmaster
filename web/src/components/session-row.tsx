@@ -97,7 +97,11 @@ export function SessionRow({
       )}
     >
       <StatusDot status={session.status} />
-      <HarnessIcon harnessId={session.harnessId} title={session.harnessName} />
+      <HarnessIcon
+        harnessId={session.harnessId}
+        icon={session.harnessIcon}
+        title={session.harnessName}
+      />
 
       <span className="min-w-0 flex-1 leading-tight">
         <span

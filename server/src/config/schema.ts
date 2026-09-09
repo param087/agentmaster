@@ -23,6 +23,12 @@ export const harnessSchema = z
     name: z.string().min(1),
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
+    /**
+     * Which brand mark the dashboard should draw. Defaults to the harness id.
+     * Set it when a fork or renamed CLI should reuse an existing icon, e.g.
+     * `icon: claude` for a Claude Code wrapper.
+     */
+    icon: z.string().min(1).optional(),
     busy_marker: z.string().min(1).optional(),
     waiting_input: z.array(waitingRuleSchema).default([]),
     idle_ms: z.number().int().positive().optional(),

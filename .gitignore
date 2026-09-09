@@ -4,3 +4,4 @@ dist
 .DS_Store
 server/test/fixtures/*.local.cast
 .playwright-mcp/
+web/tsconfig.tsbuildinfo

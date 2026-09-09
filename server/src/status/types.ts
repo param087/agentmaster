@@ -31,6 +31,8 @@ export interface Session {
   id: string;
   harnessId: string;
   harnessName: string;
+  /** Brand mark to draw for this session. Defaults to `harnessId`. */
+  harnessIcon: string;
   cwd: string;
   title: string;
   status: SessionStatus;

@@ -113,7 +113,7 @@ describe('GET /api/harnesses', () => {
     expect(body.harnesses.length).toBeGreaterThan(0);
 
     for (const h of body.harnesses) {
-      expect(Object.keys(h).sort()).toEqual(['command', 'id', 'name']);
+      expect(Object.keys(h).sort()).toEqual(['command', 'icon', 'id', 'name']);
       expect(h['re']).toBeUndefined();
     }
     // A RegExp serialises to `{}`; round-tripping proves none survived.

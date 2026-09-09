@@ -141,6 +141,7 @@ export class PtySession extends EventEmitter {
       id: opts.id,
       harnessId: opts.harness.id,
       harnessName: opts.harness.name,
+      harnessIcon: opts.harness.icon ?? opts.harness.id,
       cwd: opts.cwd,
       title: opts.title,
       status: 'starting',

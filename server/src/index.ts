@@ -4,7 +4,7 @@ import { createServer as createHttpServer, type Server } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { loadHarnesses } from './config/harnesses.js';
+import { DEFAULT_HARNESSES_PATH, loadHarnesses, watchHarnesses } from './config/harnesses.js';
 import { fsRouter } from './routes/fs.js';
 import { harnessesRouter } from './routes/harnesses.js';
 import { sessionsRouter } from './routes/sessions.js';
@@ -111,11 +111,19 @@ async function main(): Promise<void> {
   await new Promise<void>((ready) => server.listen(port, HOST, ready));
   process.stdout.write(`agentmaster listening on http://${HOST}:${port} (${harnessCount} harnesses)\n`);
 
+  // Pick up edits to harnesses.yaml without a restart — restarting would kill
+  // every running session, which makes tuning a detection rule painful.
+  // A bad edit is logged and the previous config is kept.
+  const unwatch = watchHarnesses(DEFAULT_HARNESSES_PATH, (harnesses) => {
+    process.stdout.write(`[harnesses] reloaded (${harnesses.length} harnesses)\n`);
+  });
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stdout.write(`\n[shutdown] ${signal}: killing sessions\n`);
+    unwatch();
     manager.killAll();
     void close().then(() => process.exit(0));
   };

@@ -22,6 +22,8 @@ export interface Harness {
   name: string;
   command: string;
   args: string[];
+  /** Brand mark to draw in the UI. Defaults to `id`. */
+  icon?: string;
   busyMarker?: RegExp;
   waitingInput: WaitingRule[];
   idleMs: number;
@@ -109,6 +111,7 @@ export function parseHarnesses(yamlText: string): Harness[] {
     if (raw.busy_marker) {
       harness.busyMarker = compileRegExp(raw.busy_marker, raw.id, 'busy_marker');
     }
+    if (raw.icon) harness.icon = raw.icon;
     return harness;
   });
 }

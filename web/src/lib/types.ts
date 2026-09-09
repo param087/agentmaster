@@ -52,6 +52,8 @@ export interface Session {
   id: string;
   harnessId: string;
   harnessName: string;
+  /** Brand mark to draw for this session. Defaults to `harnessId`. */
+  harnessIcon: string;
   cwd: string;
   title: string;
   status: SessionStatus;
@@ -84,4 +86,6 @@ export interface HarnessInfo {
   id: string;
   name: string;
   command: string;
+  /** Brand mark to draw. Resolved server-side, so the client never guesses. */
+  icon: string;
 }

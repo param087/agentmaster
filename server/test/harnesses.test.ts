@@ -137,6 +137,22 @@ describe('parseHarnesses', () => {
     expect(rule.re.test('allow this command?')).toBe(true);
   });
 
+  it('carries an explicit icon so a fork can reuse an existing brand mark', () => {
+    const [harness] = parseHarnesses(
+      ['harnesses:', '  - id: my-claude-fork', '    name: Fork', '    command: myclaude', '    icon: claude-code'].join(
+        '\n',
+      ),
+    );
+    expect(harness?.icon).toBe('claude-code');
+  });
+
+  it('leaves icon unset when absent, so callers fall back to the id', () => {
+    const [harness] = parseHarnesses(
+      ['harnesses:', '  - id: solo', '    name: Solo', '    command: solo'].join('\n'),
+    );
+    expect(harness?.icon).toBeUndefined();
+  });
+
   it('throws on duplicate harness ids', () => {
     const yaml = [
       'harnesses:',
