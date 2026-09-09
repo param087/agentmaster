@@ -88,4 +88,8 @@ export interface HarnessInfo {
   command: string;
   /** Brand mark to draw. Resolved server-side, so the client never guesses. */
   icon: string;
+  /** The command resolves to an executable on PATH. */
+  available: boolean;
+  /** Shown in the new-session picker. */
+  enabled: boolean;
 }

@@ -177,13 +177,15 @@ describe('parseHarnesses', () => {
 });
 
 describe('the shipped harnesses.yaml', () => {
-  it('parses and contains all six harnesses', () => {
+  it('parses and contains the six rule-carrying harnesses', () => {
     const text = readFileSync(resolve(repoRoot, 'harnesses.yaml'), 'utf8');
     const ids = parseHarnesses(text).map((h) => h.id);
     expect(ids).toEqual(
       expect.arrayContaining(['opencode', 'claude-code', 'gemini-cli', 'codex', 'qwen-code', 'pi']),
     );
-    expect(ids).toHaveLength(6);
+    // No fixed count: the registry grows as harnesses are added. What matters
+    // is that the six with detection rules are all still present.
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('loadHarnesses() reads the repo-root file', () => {

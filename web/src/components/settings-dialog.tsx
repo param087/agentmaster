@@ -5,6 +5,7 @@ import { cn } from '../lib/cn';
 import type { MuteSettings, NotifyKind } from '../hooks/use-notifications';
 import { NOTIFY_KINDS } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
+import { HarnessSettings } from './harness-settings';
 
 const BUTTON =
   'self-start rounded-md border border-base-700 bg-base-800 px-3 py-1.5 text-[12px] text-base-100 ' +
@@ -201,7 +202,7 @@ export function SettingsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-base-950/70 p-6 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-base-950/70 p-4 pt-[6vh] backdrop-blur-sm sm:p-6 sm:pt-[10vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -210,7 +211,7 @@ export function SettingsDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        className="flex max-h-[76vh] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-xl border border-base-700 bg-base-900 p-5 shadow-2xl shadow-black/60"
+        className="flex max-h-[88vh] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-xl border border-base-700 bg-base-900 p-5 shadow-2xl shadow-black/60"
       >
         <h2 className="text-sm font-semibold tracking-tight text-base-100">Settings</h2>
 
@@ -308,6 +309,8 @@ export function SettingsDialog({
             );
           })}
         </section>
+
+        <HarnessSettings />
 
         <div className="flex justify-end">
           <button

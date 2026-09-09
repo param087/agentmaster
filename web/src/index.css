@@ -1,4 +1,17 @@
 @import "tailwindcss";
+
+/*
+ * Tells the browser to paint native controls dark: scrollbars, text inputs,
+ * focus rings, date pickers. `class="dark"` is a Tailwind convention and has no
+ * effect on any of them.
+ *
+ * Note this does *not* reliably fix a native <select> popup on macOS, which is
+ * drawn by the OS outside the page — that is why the harness picker is a custom
+ * listbox rather than a <select>.
+ */
+:root {
+  color-scheme: dark;
+}
 @import "@xterm/xterm/css/xterm.css";
 
 /*

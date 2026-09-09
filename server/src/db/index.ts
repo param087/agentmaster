@@ -67,6 +67,15 @@ export interface Db {
   /** Bumps the consecutive failure count, or resets it and stamps `last_ok_at`. */
   recordPushResult(endpoint: string, ok: boolean, at?: number): void;
 
+  /**
+   * Explicit enable/disable choices, keyed by harness id.
+   *
+   * Absent means "never chosen", which callers resolve to the harness's
+   * availability — so a newly installed CLI appears on its own.
+   */
+  getHarnessPrefs(): Map<string, boolean>;
+  setHarnessEnabled(harnessId: string, enabled: boolean, at?: number): void;
+
   close(): void;
 }
 
@@ -235,6 +244,11 @@ export function openDb(path?: string): Db {
     pushOk: sqlite.prepare(
       `UPDATE push_subscriptions SET failures = 0, last_ok_at = ? WHERE endpoint = ?`,
     ),
+    listHarnessPrefs: sqlite.prepare(`SELECT harness_id, enabled FROM harness_prefs`),
+    setHarnessPref: sqlite.prepare(
+      `INSERT INTO harness_prefs (harness_id, enabled, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(harness_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
+    ),
     pushFail: sqlite.prepare(
       `UPDATE push_subscriptions SET failures = failures + 1 WHERE endpoint = ?`,
     ),
@@ -289,6 +303,13 @@ export function openDb(path?: string): Db {
     recordPushResult(endpoint, ok, at = Date.now()) {
       if (ok) stmts.pushOk.run(at, endpoint);
       else stmts.pushFail.run(endpoint);
+    },
+    getHarnessPrefs() {
+      const rows = stmts.listHarnessPrefs.all() as { harness_id: string; enabled: number }[];
+      return new Map(rows.map((r) => [r.harness_id, r.enabled === 1]));
+    },
+    setHarnessEnabled(harnessId, enabled, at = Date.now()) {
+      stmts.setHarnessPref.run(harnessId, enabled ? 1 : 0, at);
     },
     close() {
       sqlite.close();

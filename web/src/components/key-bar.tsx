@@ -28,6 +28,9 @@ export function controlCode(key: string): string {
  *
  * Without these the dashboard is read-only on a phone: `⇧Tab` (plan mode),
  * `/model`, every arrow-key menu and `Ctrl-C` are simply unreachable.
+ *
+ * `Space` is here despite phones having one, because reaching for the soft
+ * keyboard mid-menu dismisses the arrows you were just using.
  */
 interface KeyDef {
   /** Stable React key and accessible name. */
@@ -48,9 +51,15 @@ const KEYS: readonly KeyDef[] = [
   { id: 'Down', icon: ArrowDown, bytes: '\x1b[B', title: 'Arrow down' },
   { id: 'Left', icon: ArrowLeft, bytes: '\x1b[D', title: 'Arrow left' },
   { id: 'Right', icon: ArrowRight, bytes: '\x1b[C', title: 'Arrow right' },
-  // Phones have their own space bar, but reaching for the soft keyboard mid-menu
-  // dismisses the arrows you were using — and space is what toggles a selection
-  // in most TUI pickers. Keeping it here means never leaving the bar.
+  // Scrolling back through a long agent transcript is the main reason to reach
+  // for these on a phone — opencode and Claude both page with them.
+  { id: 'PgUp', label: 'PgUp', bytes: '\x1b[5~', title: 'Page up' },
+  { id: 'PgDn', label: 'PgDn', bytes: '\x1b[6~', title: 'Page down' },
+  // Normal-mode sequences, matching what xterm.js emits for the physical keys.
+  // An application-cursor-mode harness would want \x1bOH / \x1bOF, but nothing
+  // we ship switches into it for Home/End.
+  { id: 'Home', label: 'Home', bytes: '\x1b[H', title: 'Home (start of line)' },
+  { id: 'End', label: 'End', bytes: '\x1b[F', title: 'End (end of line)' },
   { id: 'Space', label: 'Space', bytes: ' ', title: 'Space', wide: true },
   { id: 'Enter', icon: CornerDownLeft, bytes: '\r', title: 'Enter' },
   { id: 'Slash', label: '/', bytes: '/', title: 'Slash (commands)' },

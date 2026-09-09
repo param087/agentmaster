@@ -230,6 +230,8 @@ describe('the shipped harnesses.yaml (post-fixture-verification)', () => {
     expect(ids).toEqual(
       expect.arrayContaining(['opencode', 'claude-code', 'gemini-cli', 'codex', 'qwen-code', 'pi']),
     );
-    expect(ids).toHaveLength(6);
+    // No fixed count: the registry grows as harnesses are added. What matters
+    // is that the six with detection rules are all still present.
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });

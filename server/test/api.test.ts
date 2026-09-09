@@ -114,7 +114,7 @@ describe('GET /api/harnesses', () => {
     expect(body.harnesses.length).toBeGreaterThan(0);
 
     for (const h of body.harnesses) {
-      expect(Object.keys(h).sort()).toEqual(['command', 'icon', 'id', 'name']);
+      expect(Object.keys(h).sort()).toEqual(['available', 'command', 'enabled', 'icon', 'id', 'name']);
       expect(h['re']).toBeUndefined();
     }
     // A RegExp serialises to `{}`; round-tripping proves none survived.
@@ -201,6 +201,70 @@ describe('DELETE /api/sessions/:id', () => {
     },
     PTY_TIMEOUT,
   );
+});
+
+
+describe('POST /api/harnesses/:id/enabled', () => {
+  it('returns 404 for an unknown harness', async () => {
+    const base = await boot();
+    const res = await fetch(`${base}/api/harnesses/nope/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for a malformed body', async () => {
+    const base = await boot();
+    const res = await fetch(`${base}/api/harnesses/opencode/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('persists an explicit toggle and overrides the availability default', async () => {
+    const base = await boot();
+    const read = async (): Promise<{ available: boolean; enabled: boolean }> => {
+      const { harnesses } = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+        harnesses: { id: string; available: boolean; enabled: boolean }[];
+      };
+      const found = harnesses.find((h) => h.id === 'opencode');
+      if (!found) throw new Error('opencode missing from the registry');
+      return found;
+    };
+
+    // opencode is installed on this machine, so it defaults to enabled.
+    const before = await read();
+    expect(before.available).toBe(true);
+    expect(before.enabled).toBe(true);
+
+    const res = await fetch(`${base}/api/harnesses/opencode/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(200);
+
+    // An explicit choice must beat "it is installed, so show it".
+    const after = await read();
+    expect(after.available).toBe(true);
+    expect(after.enabled).toBe(false);
+  });
+
+  it('defaults enabled to availability for a harness that is not installed', async () => {
+    const base = await boot();
+    const { harnesses } = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { id: string; available: boolean; enabled: boolean }[];
+    };
+    for (const h of harnesses) {
+      // Nothing has been toggled in this fresh in-memory database, so every
+      // harness must mirror its availability exactly.
+      expect(h.enabled).toBe(h.available);
+    }
+  });
 });
 
 describe('GET /api/fs/ls', () => {

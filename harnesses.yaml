@@ -101,3 +101,47 @@ harnesses:
     waiting_input:
       - match: "(?i)allow execution[^\\n]*\\?"
         kind: permission
+
+  # ---------------------------------------------------------------------------
+  # Definitions only, deliberately: no waiting_input rules until a real fixture
+  # has been captured from the CLI. A guessed regex is worse than none — the
+  # original gemini pattern could never match real output, so those sessions
+  # blocked silently, which is the exact failure this tool exists to prevent.
+  #
+  # They still get a terminal, busy/idle/exited, and turn-end amber, because
+  # turn-end detection is regex-free and works for any harness.
+  #
+  # Anything not installed shows as "not installed" in the picker and is
+  # disabled by default, so an incorrect command name here is visible rather
+  # than a spawn failure.
+  # ---------------------------------------------------------------------------
+
+  # Command verified: installed locally as cline 1.0.10.
+  - id: cline
+    name: Cline
+    command: cline
+
+  # Command verified from npm @sourcegraph/amp.
+  - id: amp
+    name: Amp
+    command: amp
+
+  # Command verified from npm @charmland/crush.
+  - id: crush
+    name: Crush
+    command: crush
+
+  # Command verified from the Homebrew formula.
+  - id: aider
+    name: Aider
+    command: aider
+
+  # UNVERIFIED command name.
+  - id: cursor-agent
+    name: Cursor Agent
+    command: cursor-agent
+
+  # UNVERIFIED command name.
+  - id: droid
+    name: Factory Droid
+    command: droid

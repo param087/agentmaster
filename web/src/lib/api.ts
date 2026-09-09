@@ -105,6 +105,14 @@ export const api = {
     return request<LsResult>(`/fs/ls${query}`);
   },
 
+  /** Shows or hides a harness in the new-session picker. */
+  setHarnessEnabled(id: string, enabled: boolean): Promise<{ harness: HarnessInfo }> {
+    return request<{ harness: HarnessInfo }>(
+      `/harnesses/${encodeURIComponent(id)}/enabled`,
+      jsonPost({ enabled }),
+    );
+  },
+
   /** Creates one directory inside `parent`. `name` must be a single segment. */
   mkdir(parent: string, name: string): Promise<{ path: string }> {
     return request<{ path: string }>('/fs/mkdir', jsonPost({ parent, name }));

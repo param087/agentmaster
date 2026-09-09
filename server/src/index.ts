@@ -56,7 +56,7 @@ export function createServer(opts: CreateServerOptions = {}): AppServer {
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
-  app.use('/api/harnesses', harnessesRouter());
+  app.use('/api/harnesses', harnessesRouter(manager.database));
   app.use('/api/sessions', sessionsRouter(manager));
   app.use('/api/fs', fsRouter());
   app.use('/api/push', pushRouter(manager.database));

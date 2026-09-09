@@ -33,8 +33,9 @@ describe('migrations', () => {
     return v;
   }
 
-  // Updated deliberately for migration 002 (push_subscriptions): a fresh
-  // database now lands on user_version 2, not 1.
+  // Bumped deliberately with each migration. 003 adds harness_prefs, so a fresh
+  // database now lands on user_version 3.
+  const LATEST_SCHEMA = 3;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
@@ -48,19 +49,19 @@ describe('migrations', () => {
         createdAt: 1,
       });
       first.close();
-      expect(readUserVersion(file)).toBe(2);
+      expect(readUserVersion(file)).toBe(LATEST_SCHEMA);
 
       // second open must not re-apply (would throw "table already exists")
       const second = openDb(file);
       expect(second.getSession('s1')?.title).toBe('t');
       second.close();
-      expect(readUserVersion(file)).toBe(2);
+      expect(readUserVersion(file)).toBe(LATEST_SCHEMA);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('upgrades a live v1 database to v2 without losing rows', () => {
+  it('upgrades a live v1 database to the latest schema without losing rows', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
     try {
@@ -89,7 +90,7 @@ describe('migrations', () => {
       v1.close();
 
       const upgraded = openDb(file);
-      expect(readUserVersion(file)).toBe(2);
+      expect(readUserVersion(file)).toBe(LATEST_SCHEMA);
       // The real rows survive: a destructive migration would be unacceptable.
       expect(upgraded.getSession('old')?.title).toBe('legacy');
       expect(upgraded.listEvents('old').map((e) => e.status)).toEqual(['busy']);

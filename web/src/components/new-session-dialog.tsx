@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
 import { api, ApiError } from '../lib/api';
 import type { HarnessInfo, Session } from '../lib/types';
 import { FolderPicker, rememberFolder } from './folder-picker';
+import { HarnessSelect } from './harness-select';
 
 export interface NewSessionDialogProps {
   onClose: () => void;
@@ -23,7 +24,9 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
   const [title, setTitle] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const selectRef = useRef<HTMLSelectElement | null>(null);
+  const [loading, setLoading] = useState(true);
+  // Suppresses the dialog's own Escape handling while a nested popup owns it.
+  const [popupOpen, setPopupOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,33 +34,36 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       .harnesses()
       .then((list) => {
         if (cancelled) return;
-        setHarnesses(list);
-        setHarnessId((current) => current || (list[0]?.id ?? ''));
+        // Only enabled harnesses are offered; the full list lives in Settings.
+        const usable = list.filter((h) => h.enabled);
+        setHarnesses(usable);
+        setHarnessId((current) => current || (usable[0]?.id ?? ''));
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(cause instanceof ApiError ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  useEffect(() => {
-    selectRef.current?.focus();
-  }, []);
-
   // Captured at the window so the terminal, which normally owns the keyboard,
   // cannot swallow Escape while the modal is up.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-      }
+      if (event.key !== 'Escape') return;
+      // The harness listbox closes itself first; one Escape should not dismiss
+      // both it and the dialog.
+      if (popupOpen) return;
+      event.stopPropagation();
+      onClose();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [onClose]);
+  }, [onClose, popupOpen]);
 
   const submit = (event: React.FormEvent): void => {
     event.preventDefault();
@@ -95,22 +101,21 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       >
         <h2 className="text-sm font-semibold tracking-tight text-base-100">New session</h2>
 
-        <label className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <span className="text-[11px] uppercase tracking-[0.12em] text-base-400">Harness</span>
-          <select
-            ref={selectRef}
+          <HarnessSelect
+            harnesses={harnesses}
             value={harnessId}
-            onChange={(event) => setHarnessId(event.target.value)}
-            className="rounded-md border border-base-700 bg-base-950 px-2.5 py-1.5 text-[13px] text-base-100 focus:border-accent-dim focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            {harnesses.length === 0 && <option value="">Loading…</option>}
-            {harnesses.map((harness) => (
-              <option key={harness.id} value={harness.id}>
-                {harness.name} ({harness.command})
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={setHarnessId}
+            loading={loading}
+            onOpenChange={setPopupOpen}
+          />
+          {!loading && harnesses.length === 0 && (
+            <p className="text-[11px] text-base-400">
+              Every harness is disabled. Turn one on in Settings.
+            </p>
+          )}
+        </div>
 
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] uppercase tracking-[0.12em] text-base-400">Folder</span>
