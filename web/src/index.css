@@ -47,6 +47,15 @@ body,
   height: 100%;
 }
 
+/*
+ * On a phone `100%` of `html` is the *large* viewport, which stays tall when
+ * the URL bar retracts and leaves the key bar under the fold. `100dvh` tracks
+ * the visible viewport instead. Desktop is unaffected: there `dvh` == `vh`.
+ */
+#root {
+  height: 100dvh;
+}
+
 body {
   margin: 0;
   overflow: hidden; /* fixed app shell: panes scroll, the page never does */
@@ -54,6 +63,11 @@ body {
   color: var(--color-base-100);
   font-family: var(--font-mono);
   -webkit-font-smoothing: antialiased;
+  /* iOS enlarges text in "portrait" on its own; the terminal must not reflow. */
+  -webkit-text-size-adjust: 100%;
+  /* No grey flash on every key-bar tap, and no pull-to-refresh eating a drag. */
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
 
 ::selection {

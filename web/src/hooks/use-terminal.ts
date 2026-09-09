@@ -64,6 +64,17 @@ export interface UseTerminalResult {
   send: (data: string) => void;
   /** Sends a JSON control message. Never reaches the PTY. */
   sendControl: (message: TerminalControlMessage) => void;
+  /**
+   * Installs a one-shot transform over the *next* chunk the user types.
+   *
+   * This exists for the virtual key bar's sticky `Ctrl`: the letter that
+   * follows it comes from the phone's soft keyboard, i.e. through xterm's own
+   * `onData`, not through `send`. Rewriting it here keeps a single input path —
+   * the alternative would be a second, divergent keyboard implementation.
+   *
+   * Consumed and cleared automatically after one chunk. Pass `null` to cancel.
+   */
+  setInputTransform: (transform: ((data: string) => string) | null) => void;
 }
 
 /**
@@ -97,9 +108,23 @@ function isViewerFocused(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus();
 }
 
-function terminalUrl(sessionId: string): string {
+/**
+ * An explicit PTY geometry requested by the user via "Fit to screen".
+ *
+ * `null` means "leave the PTY alone", which is the default and the safe one:
+ * the server only resizes when *both* `cols` and `rows` are present on the
+ * query string, and a resize is visible to every other viewer of the session.
+ */
+export interface TerminalDims {
+  cols: number;
+  rows: number;
+}
+
+function terminalUrl(sessionId: string, dims: TerminalDims | null): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${scheme}://${window.location.host}/ws/term/${encodeURIComponent(sessionId)}`;
+  const base = `${scheme}://${window.location.host}/ws/term/${encodeURIComponent(sessionId)}`;
+  if (!dims) return base;
+  return `${base}?cols=${dims.cols}&rows=${dims.rows}`;
 }
 
 /**
@@ -108,11 +133,22 @@ function terminalUrl(sessionId: string): string {
  * Bytes are forwarded verbatim in both directions — no decoding, no line
  * buffering — which is what makes arrow keys, `⇧Tab`, `/model` and Ctrl-C work.
  */
-export function useTerminal(sessionId: string | null): UseTerminalResult {
+export function useTerminal(
+  sessionId: string | null,
+  dims: TerminalDims | null = null,
+): UseTerminalResult {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const inputTransformRef = useRef<((data: string) => string) | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Destructured so the effect depends on the numbers, not on the identity of a
+  // freshly-built object — otherwise every parent render would tear the
+  // terminal down and reconnect the socket.
+  const cols = dims?.cols ?? TERM_COLS;
+  const rows = dims?.rows ?? TERM_ROWS;
+  const explicitDims = dims !== null;
 
   useEffect(() => {
     setConnected(false);
@@ -131,8 +167,8 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     container.replaceChildren();
 
     const term = new Terminal({
-      cols: TERM_COLS,
-      rows: TERM_ROWS,
+      cols,
+      rows,
       convertEol: false,
       scrollback: 5000,
       fontFamily: 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace',
@@ -162,9 +198,15 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     }
 
     const encoder = new TextEncoder();
-    const dataListener = term.onData((data) => {
+    const dataListener = term.onData((raw) => {
       const ws = socketRef.current;
-      if (ws?.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      // Read-and-clear before applying, so a transform that throws cannot latch
+      // itself permanently over the user's keyboard.
+      const transform = inputTransformRef.current;
+      inputTransformRef.current = null;
+      const data = transform ? transform(raw) : raw;
+      ws.send(encoder.encode(data));
     });
 
     let attempts = 0;
@@ -210,7 +252,9 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     const connect = (): void => {
       if (cancelled) return;
 
-      const ws = new WebSocket(terminalUrl(sessionId));
+      const ws = new WebSocket(
+        terminalUrl(sessionId, explicitDims ? { cols, rows } : null),
+      );
       ws.binaryType = 'arraybuffer';
       socketRef.current = ws;
 
@@ -291,7 +335,7 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
       // switches would exhaust the browser's context pool.
       term.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, cols, rows, explicitDims]);
 
   // Keystrokes are BINARY. A string here would be read as a control message by
   // the server and silently dropped, so the user's typing would vanish.
@@ -306,5 +350,12 @@ export function useTerminal(sessionId: string | null): UseTerminalResult {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
   }, []);
 
-  return { containerRef, connected, error, send, sendControl };
+  const setInputTransform = useCallback(
+    (transform: ((data: string) => string) | null): void => {
+      inputTransformRef.current = transform;
+    },
+    [],
+  );
+
+  return { containerRef, connected, error, send, sendControl, setInputTransform };
 }

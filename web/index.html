@@ -2,7 +2,19 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      `viewport-fit=cover` lets the app paint under the notch and the home
+      indicator; every edge that matters then pays it back with
+      `env(safe-area-inset-*)` padding.
+
+      `maximum-scale=1` because the terminal has its own pinch-to-zoom: browser
+      zoom would fight it, and on iOS it also leaves the page permanently
+      offset after a stray two-finger gesture.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+    />
     <title>agentmaster</title>
   </head>
   <body>
