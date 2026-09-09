@@ -1,0 +1,38 @@
+- generic [ref=f6e3]:
+  - complementary [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - heading "agentmaster" [level=1] [ref=f6e6]
+      - button "Settings" [ref=f6e7]
+      - button "New" [ref=f6e11]
+    - generic [ref=f6e21]:
+      - heading "Sessions 2" [level=2] [ref=f6e405]:
+        - text: Sessions
+        - generic [ref=f6e23]: "2"
+      - generic [ref=f6e189]:
+        - button "Idle OC Downloads opencode · 3s" [ref=f6e426]:
+          - img "Idle" [ref=f6e424]
+          - generic "opencode" [ref=f6e410]: OC
+          - generic [ref=f6e411]:
+            - generic [ref=f6e412]: Downloads
+            - generic [ref=f6e413]: opencode · 3s
+        - button "Idle OC Documents opencode · 2m" [active] [ref=f6e425]:
+          - img "Idle" [ref=f6e327]
+          - generic "opencode" [ref=f6e194]: OC
+          - generic [ref=f6e195]:
+            - generic [ref=f6e196]: Documents
+            - generic [ref=f6e197]: opencode · 2m
+  - main [ref=f6e26]:
+    - generic [ref=f6e27]:
+      - text: Turn on desktop notifications so you hear about blocked sessions.
+      - button "Enable" [ref=f6e31]
+      - button "Dismiss" [ref=f6e32]
+    - generic [ref=f6e33]:
+      - img "Idle" [ref=f6e427]
+      - generic [ref=f6e201]:
+        - generic [ref=f6e202]:
+          - generic [ref=f6e203]: Documents
+          - generic "/Users/param/Documents" [ref=f6e428]
+        - generic [ref=f6e205]: opencode · Idle · 2m
+      - button "Kill" [ref=f6e206]
+      - button "Remove" [ref=f6e212]
+    - textbox "Terminal input" [ref=f6e432]

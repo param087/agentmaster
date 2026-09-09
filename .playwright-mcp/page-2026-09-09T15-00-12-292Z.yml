@@ -1,0 +1,27 @@
+- generic [ref=f12e3]:
+  - complementary [ref=f12e4]:
+    - generic [ref=f12e5]:
+      - heading "agentmaster" [level=1] [ref=f12e6]
+      - button "Settings" [ref=f12e7]
+      - button "New" [ref=f12e11]
+    - generic [ref=f12e21]:
+      - heading "Sessions 1" [level=2] [ref=f12e30]:
+        - text: Sessions
+        - generic [ref=f12e23]: "1"
+      - button "Idle OC param opencode · 2s" [ref=f12e32]:
+        - img "Idle" [ref=f12e33]
+        - generic "opencode" [ref=f12e35]: OC
+        - generic [ref=f12e36]:
+          - generic [ref=f12e37]: param
+          - generic [ref=f12e38]: opencode · 2s
+  - main [ref=f12e26]:
+    - generic [ref=f12e27]:
+      - img "Idle" [ref=f12e39]
+      - generic [ref=f12e41]:
+        - generic [ref=f12e42]:
+          - generic [ref=f12e43]: param
+          - generic "/Users/param" [ref=f12e44]
+        - generic [ref=f12e45]: opencode · Idle · 2s
+      - button "Kill" [ref=f12e46]
+      - button "Remove" [ref=f12e52]
+    - textbox "Terminal input" [ref=f12e62]

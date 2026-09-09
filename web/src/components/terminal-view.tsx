@@ -19,8 +19,23 @@ const WRAPPER_PADDING_PX = 24;
  * fitting would resize the PTY and every other viewer along with it. Scale is
  * clamped at 1 because upscaled text is blurrier than empty margin is ugly.
  */
-export function TerminalView({ sessionId }: { sessionId: string | null }) {
-  const { containerRef, connected, error } = useTerminal(sessionId);
+export interface TerminalViewProps {
+  sessionId: string | null;
+  /**
+   * Receives the live PTY writer whenever the socket state changes, so callers
+   * (quick actions) can send keystrokes down the same socket the keyboard uses
+   * instead of taking the slower REST fallback.
+   */
+  onSendReady?: (send: ((data: string) => void) | null) => void;
+}
+
+export function TerminalView({ sessionId, onSendReady }: TerminalViewProps) {
+  const { containerRef, connected, error, send } = useTerminal(sessionId);
+
+  useEffect(() => {
+    onSendReady?.(connected ? send : null);
+    return () => onSendReady?.(null);
+  }, [connected, send, onSendReady]);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
 

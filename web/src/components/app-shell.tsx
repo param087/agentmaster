@@ -29,10 +29,17 @@ function useClock(): number {
   return now;
 }
 
-/** ⌘ on Apple platforms, Ctrl elsewhere. */
+/**
+ * ⌘ on Apple platforms, Ctrl+Shift elsewhere.
+ *
+ * Plain Ctrl-K and Ctrl-N are readline bindings (kill-to-end-of-line, next-line)
+ * that every harness TUI expects to receive, so on non-Apple platforms the app
+ * must not swallow them. ⌘ is safe because terminals never claim it.
+ */
 function isPrimaryModifier(event: KeyboardEvent): boolean {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  return mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (mac) return event.metaKey && !event.ctrlKey;
+  return event.ctrlKey && event.shiftKey && !event.metaKey;
 }
 
 export interface AppShellProps {
@@ -52,6 +59,16 @@ export function AppShell({
 }: AppShellProps) {
   const now = useClock();
   const [newOpen, setNewOpen] = useState(false);
+  // Held in state (not a ref) so QuickActions re-renders when the socket opens
+  // or closes and can switch between socket and REST delivery.
+  const [terminalSend, setTerminalSend] = useState<((data: string) => void) | null>(null);
+
+  // Stable identity, or TerminalView's effect would re-run every render.
+  // The extra arrow is required: React treats a bare function passed to a state
+  // setter as an updater, which would call `send` instead of storing it.
+  const handleSendReady = useCallback((send: ((data: string) => void) | null) => {
+    setTerminalSend(() => send);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [permissionBannerHidden, setPermissionBannerHidden] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -204,10 +221,14 @@ export function AppShell({
         )}
 
         <div className="min-h-0 flex-1">
-          <TerminalView sessionId={selectedId} />
+          <TerminalView sessionId={selectedId} onSendReady={handleSendReady} />
         </div>
 
-        <QuickActions session={selected} />
+        <QuickActions
+          session={selected}
+          send={terminalSend ?? undefined}
+          terminalConnected={terminalSend !== null}
+        />
       </main>
 
       {newOpen && (

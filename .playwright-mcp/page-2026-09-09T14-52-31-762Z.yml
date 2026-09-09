@@ -1,0 +1,67 @@
+- generic [ref=f6e3]:
+  - complementary [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - heading "agentmaster" [level=1] [ref=f6e6]
+      - button "Settings" [ref=f6e7]
+      - button "New" [ref=f6e11]
+    - generic [ref=f6e21]:
+      - heading "Sessions 0" [level=2] [ref=f6e22]:
+        - text: Sessions
+        - generic [ref=f6e23]: "0"
+      - paragraph [ref=f6e24]:
+        - text: No sessions yet.
+        - button "Start one" [ref=f6e25]
+        - text: to spawn a harness in a folder.
+  - main [ref=f6e26]:
+    - generic [ref=f6e27]:
+      - text: Turn on desktop notifications so you hear about blocked sessions.
+      - button "Enable" [ref=f6e31]
+      - button "Dismiss" [ref=f6e32]
+    - generic [ref=f6e33]: No session selected
+    - generic [ref=f6e34]: Select or create a session to see its terminal.
+  - dialog "New session" [ref=f6e37]:
+    - heading "New session" [level=2] [ref=f6e38]
+    - generic [ref=f6e39]:
+      - generic [ref=f6e40]: Harness
+      - combobox "Harness" [active] [ref=f6e41]:
+        - option "opencode (opencode)" [selected]
+        - option "Claude Code (claude)"
+        - option "Gemini CLI (gemini)"
+        - option "Codex CLI (codex)"
+        - option "Qwen Code (qwen)"
+        - option "PI (pi)"
+    - generic [ref=f6e42]:
+      - generic [ref=f6e43]: Folder
+      - generic [ref=f6e44]:
+        - generic [ref=f6e45]:
+          - button / [ref=f6e47]
+          - generic [ref=f6e48]:
+            - generic [ref=f6e49]: /
+            - button "Users" [ref=f6e50]
+          - generic [ref=f6e51]:
+            - generic [ref=f6e52]: /
+            - button "param" [ref=f6e53]
+        - generic [ref=f6e54]:
+          - button "Parent" [ref=f6e55]
+          - button "Applications" [ref=f6e58]
+          - button "Creative Cloud Files" [ref=f6e62]
+          - button "Desktop" [ref=f6e66]
+          - button "Documents" [ref=f6e70]
+          - button "Downloads" [ref=f6e74]
+          - button "forge" [ref=f6e78]
+          - button "jarvis" [ref=f6e82]
+          - button "Library" [ref=f6e86]
+          - button "Movies" [ref=f6e90]
+          - button "Music" [ref=f6e94]
+          - button "opt" [ref=f6e98]
+          - button "Pictures" [ref=f6e102]
+          - button "Postman" [ref=f6e106]
+          - button "Public" [ref=f6e110]
+        - paragraph [ref=f6e114]: Will start in /Users/param
+    - generic [ref=f6e115]:
+      - generic [ref=f6e116]: Title (optional)
+      - textbox "Title (optional)" [ref=f6e117]:
+        - /placeholder: Defaults to the folder name
+    - generic [ref=f6e118]:
+      - button "Cancel" [ref=f6e119]
+      - button "Create" [ref=f6e120]
