@@ -99,8 +99,8 @@ export class PtySession extends EventEmitter {
   private readonly ringBuffer: RingBuffer;
   private engine: StatusEngine;
   private readonly cwd: string;
-  private readonly cols: number;
-  private readonly rows: number;
+  private cols: number;
+  private rows: number;
   /** How many times this session has been restarted in place. */
   private restarts = 0;
   private readonly viewers = new Set<SessionViewer>();
@@ -296,11 +296,24 @@ export class PtySession extends EventEmitter {
 
   resize(cols: number, rows: number): void {
     if (this.exited || this.disposed) return;
+    if (cols === this.cols && rows === this.rows) return;
     try {
       this.pty.resize(cols, rows);
     } catch {
       // The child may have died between the check and the call; nothing to do.
+      return;
     }
+    this.cols = cols;
+    this.rows = rows;
+
+    // Everything in the ring buffer was drawn for the *old* width. Replaying it
+    // into a terminal of the new size overlays two differently-wrapped renders
+    // on top of each other — on a phone that looks like the screen is drawn
+    // twice, side by side. The old bytes can never be rendered correctly again,
+    // so drop them and have every viewer clear; the harness repaints at the new
+    // size within a frame or two.
+    this.ringBuffer.clear();
+    this.broadcastControl({ type: 'reset' });
   }
 
   /** SIGTERM, escalating to SIGKILL if the process is still alive 3s later. */

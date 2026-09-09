@@ -847,6 +847,48 @@ describe('restart', () => {
     PTY_TIMEOUT,
   );
 
+
+  it(
+    'clears scrollback and resets viewers when the pty is resized',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      const viewer = new ControlViewer();
+      session.attach(viewer);
+
+      await waitFor(() => session.replay().toString('utf8').includes('hello'));
+
+      session.resize(52, 37);
+
+      // Those bytes were wrapped for 120 columns. Replaying them into a
+      // 52-column terminal draws two differently-wrapped renders on top of each
+      // other, which on a phone reads as the screen being painted twice.
+      expect(session.replay().toString('utf8')).not.toContain('hello');
+      expect(viewer.controls).toEqual([{ type: 'reset' }]);
+    },
+    PTY_TIMEOUT,
+  );
+
+  it(
+    'ignores a resize to the size it already has',
+    async () => {
+      const m = newManager();
+      const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+      const session = m.get(info.id)!;
+      const viewer = new ControlViewer();
+      session.attach(viewer);
+
+      await waitFor(() => session.replay().toString('utf8').includes('hello'));
+      // Every attach carrying ?cols&rows would otherwise wipe the scrollback
+      // the viewer just asked to see.
+      session.resize(120, 32);
+
+      expect(session.replay().toString('utf8')).toContain('hello');
+      expect(viewer.controls).toEqual([]);
+    },
+    PTY_TIMEOUT,
+  );
   it(
     'removeFinished forgets stopped sessions and leaves running ones',
     async () => {

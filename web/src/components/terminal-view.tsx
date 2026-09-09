@@ -141,10 +141,19 @@ export function TerminalView({
     const observer = new ResizeObserver(update);
     observer.observe(wrapper);
     observer.observe(container);
+    // ...and the `.xterm` element itself. The container is a block that spans
+    // its parent, so its box never changes when the PTY is resized — only the
+    // xterm child shrinks. Without this, "Fit to screen" resizes the terminal to
+    // 52 columns and then keeps rendering it at the 120-column scale, using half
+    // the screen width.
+    const xterm = container.querySelector('.xterm');
+    if (xterm) observer.observe(xterm);
     update();
 
     return () => observer.disconnect();
-  }, [sessionId, containerRef]);
+    // `dims` is a dependency because xterm mounts a *new* `.xterm` element on a
+    // PTY resize, and the old observation would be pointing at a detached node.
+  }, [sessionId, containerRef, dims?.cols, dims?.rows]);
 
   // A new session, or a real PTY resize, invalidates any zoom the user had.
   useEffect(() => {

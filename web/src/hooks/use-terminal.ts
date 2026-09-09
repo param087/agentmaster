@@ -184,18 +184,25 @@ export function useTerminal(
     // WebGL context creation genuinely fails on some machines and in some
     // remote-display setups; falling back to the canvas renderer is far better
     // than white-screening the app.
+    //
+    // Loaded on the next frame rather than inline: `term.open()` starts async
+    // font measurement, and attaching WebGL before that settles binds the
+    // renderer to a half-measured grid.
     let webgl: WebglAddon | null = null;
-    try {
-      const addon = new WebglAddon();
-      addon.onContextLoss(() => {
-        addon.dispose();
-        if (webgl === addon) webgl = null;
-      });
-      term.loadAddon(addon);
-      webgl = addon;
-    } catch (cause) {
-      console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
-    }
+    const webglFrame = requestAnimationFrame(() => {
+      if (cancelled || container.clientWidth === 0) return;
+      try {
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => {
+          addon.dispose();
+          if (webgl === addon) webgl = null;
+        });
+        term.loadAddon(addon);
+        webgl = addon;
+      } catch (cause) {
+        console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
+      }
+    });
 
     const encoder = new TextEncoder();
     const dataListener = term.onData((raw) => {
@@ -329,6 +336,7 @@ export function useTerminal(
         ws.close();
       }
 
+      cancelAnimationFrame(webglFrame);
       dataListener.dispose();
       webgl?.dispose();
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session

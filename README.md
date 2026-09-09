@@ -248,6 +248,60 @@ Settings detects the tab case and shows these steps instead of a button that
 cannot work. Note that iOS forgets everything if you delete the Home Screen
 icon: you have to enable push again after re-adding it.
 
+## On your phone
+
+Over Tailscale, so nothing is exposed to the internet:
+
+```bash
+npm run mobile
+```
+
+That builds the app, starts the server on `127.0.0.1`, opens a tailnet-only
+HTTPS tunnel and prints a QR code. Tailscale terminates TLS and proxies to
+localhost, so the server keeps binding to loopback — safer than binding
+`0.0.0.0`, and nothing about the server changes.
+
+Requirements: Tailscale running on both devices, MagicDNS on, and **HTTPS
+certificates enabled** (admin console → DNS → HTTPS Certificates). The
+certificate is not optional: service workers and the Web Push API only work in a
+secure context, so without it the phone can view sessions but never notify.
+
+The tunnel uses a dedicated port (`8443` by default, `TS_PORT` to change it)
+rather than a path prefix, so it will not collide with anything already served
+at `/` on the same host.
+
+### Push notifications on iOS
+
+Safari only delivers web push to sites installed to the Home Screen. A Safari
+tab can never receive them, no matter what you allow.
+
+1. Open the URL **in Safari** (Chrome on iOS cannot install PWAs).
+2. **Share → Add to Home Screen.**
+3. Launch agentmaster from the Home Screen icon.
+4. Gear → **Enable on this device** → allow → **Send test push**.
+
+Deleting the Home Screen icon discards the subscription, so re-enable after
+re-adding it.
+
+Only `waiting` and `error` are pushed to a phone. A pocket buzz is expensive in
+a way a desktop notification is not, so a finished turn stays visual-only.
+Override with `AGENTMASTER_PUSH_KINDS=waiting,error,done`.
+
+### Using the terminal on a phone
+
+The PTY is 120 columns, which is unreadable scaled onto a 393px screen. Two ways
+round it:
+
+- **Pinch to zoom and drag to pan**, double-tap to reset. The terminal keeps its
+  size; you move the viewport.
+- **⋮ → Fit to screen** resizes the real PTY to match your phone, so text is
+  legible at 1:1. This reflows the session for *everyone* watching it, so it
+  asks first.
+
+The key bar along the bottom supplies what a phone keyboard lacks — `Esc`,
+`Tab`, `⇧Tab`, `Ctrl`, arrows, `Ctrl-C`. Without it plan mode, `/model` and
+interrupting a run are unreachable. `Ctrl` is sticky: tap it, then a letter.
+
 ## Commands
 
 ```bash
