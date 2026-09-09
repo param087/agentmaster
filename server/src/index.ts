@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DEFAULT_HARNESSES_PATH, loadHarnesses, watchHarnesses } from './config/harnesses.js';
 import { fsRouter } from './routes/fs.js';
 import { harnessesRouter } from './routes/harnesses.js';
+import { pushRouter } from './routes/push.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { getSessions, type SessionManager } from './session/manager.js';
 import { createEventsWs } from './ws/events.js';
@@ -58,6 +59,7 @@ export function createServer(opts: CreateServerOptions = {}): AppServer {
   app.use('/api/harnesses', harnessesRouter());
   app.use('/api/sessions', sessionsRouter(manager));
   app.use('/api/fs', fsRouter());
+  app.use('/api/push', pushRouter(manager.database));
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Not found' });
   });

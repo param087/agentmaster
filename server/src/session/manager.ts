@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { emitServerEvent } from '../bus.js';
 import { getHarness, loadHarnesses, type Harness } from '../config/harnesses.js';
 import { openDb, type Db } from '../db/index.js';
+import { sendPush, type PushPayload } from '../push/sender.js';
 import type { StatusSnapshot } from '../status/engine.js';
 import { isTerminalStatus, type Session } from '../status/types.js';
 import { PtySession } from './session.js';
@@ -12,6 +13,45 @@ import { PtySession } from './session.js';
 const NOTIFY_COOLDOWN_MS = 30_000;
 
 type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
+
+/**
+ * Kinds that are worth a *phone* buzz by default.
+ *
+ * Desktop notifications are cheap and in context: you are already at the
+ * machine, and dismissing one costs nothing. A pocket vibration is not — it
+ * interrupts whatever you are doing, wherever you are. So the phone only hears
+ * about genuinely blocking states: a session waiting on you, or one that
+ * crashed. `done`/`exited`/`killed` are informational; they will still be on
+ * the dashboard when you next look.
+ *
+ * Override with AGENTMASTER_PUSH_KINDS="waiting,error,done".
+ */
+const DEFAULT_PUSH_KINDS: readonly NotifyKind[] = ['waiting', 'error'];
+
+const ALL_NOTIFY_KINDS: readonly NotifyKind[] = [
+  'waiting',
+  'done',
+  'exited',
+  'killed',
+  'error',
+];
+
+function isNotifyKind(value: string): value is NotifyKind {
+  return (ALL_NOTIFY_KINDS as readonly string[]).includes(value);
+}
+
+/** Parses AGENTMASTER_PUSH_KINDS, falling back to the default set. */
+export function resolvePushKinds(raw = process.env['AGENTMASTER_PUSH_KINDS']): Set<NotifyKind> {
+  if (raw === undefined) return new Set(DEFAULT_PUSH_KINDS);
+  const kinds = raw
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter((k) => k.length > 0)
+    .filter(isNotifyKind);
+  // An explicit empty value means "no push at all", which is a legitimate
+  // choice, so it is honoured rather than silently reset to the default.
+  return new Set(kinds);
+}
 
 export interface CreateSessionInput {
   harnessId: string;
@@ -29,6 +69,13 @@ export interface SessionManagerOptions {
   notifyCooldownMs?: number;
   /** Set false in tests that must not touch process-level signal handlers. */
   installProcessHandlers?: boolean;
+  /**
+   * Injectable Web Push sender, so tests never reach the network. Defaults to
+   * the real one, which fans out to every stored subscription.
+   */
+  push?: (db: Db, payload: PushPayload) => Promise<unknown>;
+  /** Overrides AGENTMASTER_PUSH_KINDS; mainly a test seam. */
+  pushKinds?: Iterable<NotifyKind>;
 }
 
 /**
@@ -45,6 +92,8 @@ export class SessionManager {
   private readonly harnessIds: () => string[];
   private readonly now: () => number;
   private readonly notifyCooldownMs: number;
+  private readonly push: (db: Db, payload: PushPayload) => Promise<unknown>;
+  private readonly pushKinds: Set<NotifyKind>;
 
   private readonly map = new Map<string, PtySession>();
   private readonly lastNotified = new Map<string, number>();
@@ -64,6 +113,8 @@ export class SessionManager {
     this.harnessIds = opts.harnessIds ?? (() => loadHarnesses().map((h) => h.id));
     this.now = opts.now ?? Date.now;
     this.notifyCooldownMs = opts.notifyCooldownMs ?? NOTIFY_COOLDOWN_MS;
+    this.push = opts.push ?? sendPush;
+    this.pushKinds = opts.pushKinds ? new Set(opts.pushKinds) : resolvePushKinds();
 
     // Any row still open belongs to a process from a previous run: sessions are
     // killed on server restart, so the record must say so too.
@@ -109,6 +160,17 @@ export class SessionManager {
 
   get(id: string): PtySession | undefined {
     return this.map.get(id);
+  }
+
+  /**
+   * The history database this manager writes to.
+   *
+   * Exposed so routes (push subscriptions) can share the manager's connection
+   * instead of opening a second one — in tests that connection is `:memory:`,
+   * and a second handle would see an entirely different, empty database.
+   */
+  get database(): Db {
+    return this.db;
   }
 
   /** Wire info for every live session, newest first. */
@@ -206,6 +268,18 @@ export class SessionManager {
     this.lastNotified.set(key, at);
 
     emitServerEvent({ t: 'notify', id: session.id, ...decision });
+
+    // Same decision, same cooldown, one extra transport. Deriving the push from
+    // a second policy would let desktop and phone disagree about what is worth
+    // interrupting for; the only difference allowed is which kinds reach the
+    // phone at all.
+    if (this.pushKinds.has(decision.kind)) {
+      void this.push(this.db, { id: session.id, ...decision }).catch((error: unknown) => {
+        process.stderr.write(
+          `[push] send rejected: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+    }
   }
 
   private clearNotifyState(id: string): void {

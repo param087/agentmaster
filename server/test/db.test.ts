@@ -33,7 +33,9 @@ describe('migrations', () => {
     return v;
   }
 
-  it('applies migration 001 and is idempotent across re-opens', () => {
+  // Updated deliberately for migration 002 (push_subscriptions): a fresh
+  // database now lands on user_version 2, not 1.
+  it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
     try {
@@ -46,13 +48,55 @@ describe('migrations', () => {
         createdAt: 1,
       });
       first.close();
-      expect(readUserVersion(file)).toBe(1);
+      expect(readUserVersion(file)).toBe(2);
 
       // second open must not re-apply (would throw "table already exists")
       const second = openDb(file);
       expect(second.getSession('s1')?.title).toBe('t');
       second.close();
-      expect(readUserVersion(file)).toBe(1);
+      expect(readUserVersion(file)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a live v1 database to v2 without losing rows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
+    const file = join(dir, 'db.sqlite');
+    try {
+      // Build a database that stops at version 1, exactly like a user's live
+      // db from before push existed.
+      const v1 = new Database(file);
+      v1.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY, harness_id TEXT NOT NULL, cwd TEXT NOT NULL,
+          title TEXT NOT NULL, created_at INTEGER NOT NULL,
+          exited_at INTEGER, exit_code INTEGER
+        );
+        CREATE TABLE events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          at INTEGER NOT NULL, status TEXT NOT NULL, wait_kind TEXT
+        );
+        CREATE INDEX events_session ON events(session_id, at);
+        CREATE INDEX sessions_created ON sessions(created_at DESC);
+      `);
+      v1.prepare(
+        `INSERT INTO sessions VALUES ('old', 'opencode', '/tmp/p', 'legacy', 42, NULL, NULL)`,
+      ).run();
+      v1.prepare(`INSERT INTO events (session_id, at, status) VALUES ('old', 43, 'busy')`).run();
+      v1.pragma('user_version = 1');
+      v1.close();
+
+      const upgraded = openDb(file);
+      expect(readUserVersion(file)).toBe(2);
+      // The real rows survive: a destructive migration would be unacceptable.
+      expect(upgraded.getSession('old')?.title).toBe('legacy');
+      expect(upgraded.listEvents('old').map((e) => e.status)).toEqual(['busy']);
+      // ...and the new table exists and is usable.
+      upgraded.savePushSubscription({ endpoint: 'e', p256dh: 'p', auth: 'a' }, 7);
+      expect(upgraded.listPushSubscriptions().map((r) => r.endpoint)).toEqual(['e']);
+      upgraded.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

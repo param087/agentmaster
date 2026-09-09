@@ -1,12 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { onServerEvent } from '../src/bus.js';
 import type { Harness } from '../src/config/harnesses.js';
 import { openDb, type Db } from '../src/db/index.js';
-import { SessionManager } from '../src/session/manager.js';
+import { SessionManager, type SessionManagerOptions } from '../src/session/manager.js';
+import type { PushPayload } from '../src/push/sender.js';
 import type { PtySession, SessionViewer } from '../src/session/session.js';
 import type { ServerEvent, SessionStatus } from '../src/status/types.js';
 
@@ -77,11 +78,26 @@ let db: Db | undefined;
 let manager: SessionManager | undefined;
 let unsubscribes: Array<() => void> = [];
 
-function newManager(harness: Harness = bashHarness(), opts: { now?: () => number } = {}): SessionManager {
+/**
+ * Web Push payloads captured by the injected fake sender.
+ *
+ * Every manager built here gets a fake by default, so no test can reach a real
+ * push service — the seam is the whole point of `SessionManagerOptions.push`.
+ */
+let pushes: PushPayload[] = [];
+
+function newManager(
+  harness: Harness = bashHarness(),
+  opts: Partial<SessionManagerOptions> = {},
+): SessionManager {
   db = openDb(':memory:');
   manager = new SessionManager(db, {
     harnessLookup: (id) => (id === harness.id ? harness : undefined),
     harnessIds: () => [harness.id, 'other-harness'],
+    push: (_db, payload) => {
+      pushes.push(payload);
+      return Promise.resolve({ sent: 1, pruned: 0 });
+    },
     ...opts,
   });
   return manager;
@@ -96,6 +112,8 @@ function collectEvents(): ServerEvent[] {
 afterEach(() => {
   for (const un of unsubscribes) un();
   unsubscribes = [];
+  pushes = [];
+  delete process.env['AGENTMASTER_PUSH_KINDS'];
   manager?.dispose();
   manager = undefined;
   db?.close();
@@ -538,6 +556,100 @@ describe('notifications', () => {
     const statuses = db!.listEvents(info.id).map((e) => e.status);
     expect(statuses).toContain('done');
     expect(statuses).toContain('killed');
+  });
+});
+
+describe('web push', () => {
+  it('pushes for waiting and error only, by default', () => {
+    const m = newManager();
+    const a = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const b = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const c = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const d = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+
+    a.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    b.emit('status', { status: 'done', at: 0 });
+    c.emit('status', { status: 'exited', exitCode: 0, at: 0 });
+    d.emit('status', { status: 'error', exitCode: 1, at: 0 });
+
+    // A phone buzz is expensive; done/exited/killed stay on the dashboard only.
+    expect(pushes.map((p) => p.kind)).toEqual(['waiting', 'error']);
+  });
+
+  it('carries the session id and the same title/body as the desktop notify', () => {
+    const m = newManager();
+    const events = collectEvents();
+    const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    m.get(info.id)!.emit('status', { status: 'waiting_input', waitKind: 'menu', at: 0 });
+
+    const notify = events.find((e) => e.t === 'notify');
+    if (notify?.t !== 'notify') throw new Error('expected a notify event');
+    expect(pushes).toEqual([
+      { id: info.id, kind: notify.kind, title: notify.title, body: notify.body },
+    ]);
+  });
+
+  it('honours AGENTMASTER_PUSH_KINDS', () => {
+    process.env['AGENTMASTER_PUSH_KINDS'] = 'done,exited';
+    const m = newManager();
+    const a = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const b = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+
+    a.emit('status', { status: 'done', at: 0 });
+    b.emit('status', { status: 'waiting_input', waitKind: 'turn', at: 0 });
+
+    expect(pushes.map((p) => p.kind)).toEqual(['done']);
+  });
+
+  it('treats an empty AGENTMASTER_PUSH_KINDS as "no push at all"', () => {
+    process.env['AGENTMASTER_PUSH_KINDS'] = '';
+    const m = newManager();
+    const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    s.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    expect(pushes).toEqual([]);
+  });
+
+  it('shares the desktop cooldown: one push per 30s per session and kind', () => {
+    let clock = 1_000_000;
+    const m = newManager(bashHarness(), { now: () => clock });
+    const events = collectEvents();
+    const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const waiting = { status: 'waiting_input' as const, waitKind: 'permission' as const, at: 0 };
+
+    s.emit('status', waiting);
+    clock += 10_000;
+    s.emit('status', waiting);
+    expect(pushes).toHaveLength(1);
+
+    clock += 30_001;
+    s.emit('status', waiting);
+    expect(pushes).toHaveLength(2);
+    expect(events.filter((e) => e.t === 'notify')).toHaveLength(2);
+  });
+
+  it('does not push for a killed session', () => {
+    const m = newManager();
+    const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    s.emit('status', { status: 'killed', exitCode: 0, at: 0 });
+    expect(pushes).toEqual([]);
+  });
+
+  it('a rejected push does not break status handling or the desktop notify', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const m = newManager(bashHarness(), {
+      push: () => Promise.reject(new Error('push service down')),
+    });
+    const events = collectEvents();
+    const info = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    const s = m.get(info.id)!;
+
+    expect(() => {
+      s.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 7 });
+    }).not.toThrow();
+
+    expect(events.some((e) => e.t === 'notify')).toBe(true);
+    expect(db!.listEvents(info.id).map((e) => e.status)).toContain('waiting_input');
+    stderr.mockRestore();
   });
 });
 

@@ -23,6 +23,23 @@ export interface EventRow {
   waitKind: WaitKind | null;
 }
 
+export interface PushSubscriptionRow {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string | null;
+  createdAt: number;
+  lastOkAt: number | null;
+  failures: number;
+}
+
+export interface PushSubscriptionInput {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string | null;
+}
+
 export interface Db {
   insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode'>): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
@@ -42,6 +59,14 @@ export interface Db {
   listEvents(sessionId: string, limit?: number): EventRow[];
   closeOrphanedSessions(at?: number): number;
   removeSession(id: string): void;
+
+  /** Upsert by endpoint: re-subscribing refreshes the keys and clears failures. */
+  savePushSubscription(sub: PushSubscriptionInput, at?: number): void;
+  deletePushSubscription(endpoint: string): void;
+  listPushSubscriptions(): PushSubscriptionRow[];
+  /** Bumps the consecutive failure count, or resets it and stamps `last_ok_at`. */
+  recordPushResult(endpoint: string, ok: boolean, at?: number): void;
+
   close(): void;
 }
 
@@ -68,6 +93,28 @@ interface EventRecord {
   wait_kind: string | null;
 }
 
+interface PushSubscriptionRecord {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  created_at: number;
+  last_ok_at: number | null;
+  failures: number;
+}
+
+function toPushSubscriptionRow(r: PushSubscriptionRecord): PushSubscriptionRow {
+  return {
+    endpoint: r.endpoint,
+    p256dh: r.p256dh,
+    auth: r.auth,
+    userAgent: r.user_agent,
+    createdAt: r.created_at,
+    lastOkAt: r.last_ok_at,
+    failures: r.failures,
+  };
+}
+
 function defaultDbPath(): string {
   return join(homedir(), '.agentmaster', 'db.sqlite');
 }
@@ -84,8 +131,7 @@ function toSessionRow(r: SessionRecord): SessionRow {
   };
 }
 
-function toEventRow(r: EventRecord): EventRow {
-  return {
+function toEventRow(r: EventRecord): EventRow {  return {
     id: r.id,
     sessionId: r.session_id,
     at: r.at,
@@ -173,6 +219,25 @@ export function openDb(path?: string): Db {
       `UPDATE sessions SET exited_at = ?, exit_code = NULL WHERE exited_at IS NULL`,
     ),
     removeSession: sqlite.prepare(`DELETE FROM sessions WHERE id = ?`),
+    savePushSubscription: sqlite.prepare(
+      `INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent, created_at, last_ok_at, failures)
+       VALUES (@endpoint, @p256dh, @auth, @userAgent, @createdAt, NULL, 0)
+       ON CONFLICT(endpoint) DO UPDATE SET
+         p256dh = excluded.p256dh,
+         auth = excluded.auth,
+         user_agent = excluded.user_agent,
+         failures = 0`,
+    ),
+    deletePushSubscription: sqlite.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`),
+    listPushSubscriptions: sqlite.prepare(
+      `SELECT * FROM push_subscriptions ORDER BY created_at ASC, endpoint ASC`,
+    ),
+    pushOk: sqlite.prepare(
+      `UPDATE push_subscriptions SET failures = 0, last_ok_at = ? WHERE endpoint = ?`,
+    ),
+    pushFail: sqlite.prepare(
+      `UPDATE push_subscriptions SET failures = failures + 1 WHERE endpoint = ?`,
+    ),
   };
 
   return {
@@ -203,6 +268,27 @@ export function openDb(path?: string): Db {
     },
     removeSession(id) {
       stmts.removeSession.run(id);
+    },
+    savePushSubscription(sub, at = Date.now()) {
+      stmts.savePushSubscription.run({
+        endpoint: sub.endpoint,
+        p256dh: sub.p256dh,
+        auth: sub.auth,
+        userAgent: sub.userAgent ?? null,
+        createdAt: at,
+      });
+    },
+    deletePushSubscription(endpoint) {
+      stmts.deletePushSubscription.run(endpoint);
+    },
+    listPushSubscriptions() {
+      return (stmts.listPushSubscriptions.all() as PushSubscriptionRecord[]).map(
+        toPushSubscriptionRow,
+      );
+    },
+    recordPushResult(endpoint, ok, at = Date.now()) {
+      if (ok) stmts.pushOk.run(at, endpoint);
+      else stmts.pushFail.run(endpoint);
     },
     close() {
       sqlite.close();
