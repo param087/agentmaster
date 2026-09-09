@@ -1,0 +1,169 @@
+# agentmaster
+
+One dashboard for every AI CLI harness running on your laptop — opencode, Claude
+Code, Gemini CLI, Codex, Qwen Code, PI, and anything you add later.
+
+Agent CLIs run in terminals you stop watching. Past two of them you lose track:
+a session blocks on a permission prompt and sits there for forty minutes because
+nobody was looking at that tab. agentmaster mirrors every session into one
+browser window, tells you which ones need you, and notifies you when they do.
+
+## How it works
+
+There is no protocol and no per-harness integration. Each harness is spawned in
+a **pseudo-terminal**, so it believes a human is sitting at a real terminal —
+`isatty()` is true, it renders its full colour TUI, and Ctrl-C arrives as a real
+`SIGINT`. Raw bytes stream to xterm.js in the browser and back, unmodified. That
+is why arrow-key menus, `⇧Tab` plan mode, `/model`, and Ctrl-C all work
+identically for every harness.
+
+In parallel, the same bytes feed a **headless terminal emulator** on the server.
+Status detection regexes run against that *rendered screen*, not the byte
+stream — harnesses repeatedly overwrite one line with `\r\x1b[K`, so "Thinking…"
+stays in the stream forever while being visually erased. Matching the rendered
+grid is the only way to see what you would see.
+
+```
+browser (xterm.js) ──ws /term/:id (binary)──┐
+                                            ├── PtySession ── PTY ── harness
+browser (sidebar)  ──ws /events   (JSON)────┘       │
+                                                    ├─ ring buffer (2 MB replay)
+                                                    └─ screen model → status engine
+```
+
+Everything harness-specific lives in `harnesses.yaml`. Adding a CLI is a config
+entry. A CLI with *no* entry still gets a working terminal plus busy/idle/exited
+from the generic idle timer.
+
+## Requirements
+
+- Node 22+ (developed on 24)
+- Whichever harness CLIs you want to drive, on your `PATH`
+
+## Setup
+
+```bash
+npm install
+npm run dev
+```
+
+Open <http://localhost:5273>. The API runs on `127.0.0.1:7180` and Vite proxies
+to it.
+
+If `npm install` reports blocked install scripts, approve the native ones —
+`node-pty` and `better-sqlite3` need to build:
+
+```bash
+npm approve-scripts node-pty better-sqlite3 esbuild
+npm rebuild node-pty better-sqlite3
+```
+
+> `postinstall` runs `scripts/fix-pty-perms.mjs`, which restores the executable
+> bit on node-pty's `spawn-helper`. Without it every spawn fails with an opaque
+> `posix_spawnp failed`.
+
+## Using it
+
+- **+ New** — pick a harness and a folder; the session spawns and appears in the sidebar
+- **Sidebar** — one dot per session: 🔵 busy · 🟠 waiting on you · ⚪ idle · ⚫ exited · 🔴 error
+- **Needs attention** — sessions blocked on you, longest-waiting first
+- **Quick actions** — when a session is blocked, its harness's answer buttons appear under the terminal. They send keystrokes; a click is indistinguishable from typing.
+- **Notifications** — desktop notification when a session needs you, finishes, or crashes. Enable via the gear icon. They work while the tab is open in the background; there is no service worker in v1.
+- `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
+
+**Sessions are killed when the server stops.** This is deliberate for v1.
+
+## `harnesses.yaml`
+
+```yaml
+defaults:
+  idle_ms: 2500                  # silence before evaluating status
+  finished_after_busy_ms: 20000  # busy longer than this, then idle = "finished"
+
+harnesses:
+  - id: claude-code
+    name: Claude Code
+    command: claude
+    args: []
+    busy_marker: "esc to interrupt"     # on screen ⇒ still working despite silence
+    waiting_input:
+      - match: "Do you want to (proceed|make this edit)"
+        kind: permission                # permission | question | menu | unknown
+        actions:
+          - { label: "Yes", keys: "1\r" }
+          - { label: "No",  keys: "3\r" }
+```
+
+Hot-reloaded on save. A bad regex is logged and the previous config is kept.
+
+Notes:
+- Rules are tried in order; first match wins.
+- JS `RegExp` has no inline `(?i)`; a leading `(?i)` is stripped and converted to the `i` flag.
+- Rendered lines keep leading indentation, so tolerate it: `^\s*❯?\s*\d+\.`
+- `keys` are sent verbatim — `"\r"` Enter, `"\u001b"` Esc, `"1\r"` menu choice.
+
+### Adding a harness
+
+Add an entry with `id`, `name`, `command`. That alone gives you a terminal and
+busy/idle/exited. Add `waiting_input` rules to get the attention queue,
+notifications, and quick actions.
+
+## Verifying detection against a real CLI
+
+The shipped regexes for `claude-code`, `opencode`, `codex` and `pi` are
+reconstructions and **unverified against real output**. `gemini-cli` and
+`qwen-code` were corrected after a fixture caught that the original pattern
+could never match. To verify one yourself:
+
+```bash
+npx tsx server/scripts/record-fixture.ts claude-code claude-permission
+```
+
+Drive the CLI to the state you want captured, leave it on screen, press
+**Ctrl-]** to detach. Then add a row to the table in
+`server/test/detection.test.ts` and run `npm test`. If it fails, fix the regex in
+`harnesses.yaml` — never the fixture.
+
+## Commands
+
+```bash
+npm run dev         # api + web
+npm run dev:server  # api only, 127.0.0.1:7180
+npm run dev:web     # vite only, 5273
+npm test            # server test suite
+npm run typecheck   # server + web
+npm run build       # production web bundle
+```
+
+## Layout
+
+```
+harnesses.yaml            harness registry + detection rules
+server/src/
+  session/                PtySession (pty + ring buffer + fan-out), SessionManager
+  status/                 ScreenModel (headless xterm), StatusEngine (state machine)
+  config/                 YAML parsing, validation, hot reload
+  db/                     SQLite history
+  ws/                     /ws/events (JSON), /ws/term/:id (binary)
+  routes/                 REST
+web/src/
+  hooks/                  use-terminal, use-events, use-notifications
+  components/             shell, sidebar, attention queue, terminal, quick actions
+```
+
+## Design notes
+
+**The PTY is fixed at 120×32.** Multiple viewers resizing it would fight and
+trigger a `SIGWINCH` storm that corrupts the TUI. The browser scales the canvas
+down instead, never up.
+
+**Notification policy lives on the server**, including a 30s per-(session, kind)
+cooldown. The browser only applies your local mutes.
+
+**The database is history, not state.** Sessions die with the server, so any row
+left open on boot is marked exited.
+
+## Not in v1
+
+Mobile/PWA, remote access, web push, auth, multi-user, session persistence
+across restarts, cost tracking.
