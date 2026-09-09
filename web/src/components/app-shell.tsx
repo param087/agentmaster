@@ -10,7 +10,7 @@ import { QuickActions } from './quick-actions';
 import { basename, formatElapsed } from './session-row';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
-import { StatusDot, STATUS_LABEL } from './status-dot';
+import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
 import { TerminalView } from './terminal-view';
 
 const CLOCK_TICK_MS = 1000;
@@ -176,12 +176,7 @@ export function AppShell({
               </span>
               <span className="block truncate text-[11px] text-base-400">
                 {selected.harnessName} ·{' '}
-                <span
-                  className={cn(
-                    selected.status === 'waiting_input' && 'text-status-waiting',
-                    selected.status === 'error' && 'text-status-error',
-                  )}
-                >
+                <span className={cn(STATUS_TEXT[selected.status])}>
                   {STATUS_LABEL[selected.status]}
                 </span>{' '}
                 · {formatElapsed(selected.statusChangedAt, now)}
@@ -196,8 +191,12 @@ export function AppShell({
             <button
               type="button"
               onClick={() => runAction(api.killSession(selected.id))}
-              disabled={selected.status === 'exited' || selected.status === 'error'}
-              title="Send SIGTERM, keep the output"
+              disabled={isTerminalStatus(selected.status)}
+              title={
+                isTerminalStatus(selected.status)
+                  ? 'This session has already ended'
+                  : 'Send SIGTERM, keep the output'
+              }
               className="inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 text-[11px] text-base-200 transition-colors hover:border-status-error/50 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
               <Skull className="size-3.5" />

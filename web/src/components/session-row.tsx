@@ -38,19 +38,37 @@ export interface SessionRowProps {
   selected: boolean;
   /** Shared clock from the sidebar: one interval for the whole list, not one per row. */
   now: number;
+  /**
+   * Show the detection rule that fired, inline. Only the attention queue asks
+   * for this: it is a debugging affordance for wrong regexes, not primary UI.
+   */
+  showMatchedRule?: boolean;
   onSelect: (id: string) => void;
 }
 
-export function SessionRow({ session, selected, now, onSelect }: SessionRowProps) {
+export function SessionRow({
+  session,
+  selected,
+  now,
+  showMatchedRule = false,
+  onSelect,
+}: SessionRowProps) {
   const waiting = session.status === 'waiting_input';
   const label = basename(session.cwd);
+
+  // The rule lives in the tooltip everywhere, so a bad regex is always one hover
+  // away without ever taking up space.
+  const title =
+    session.matchedRule === undefined
+      ? `${session.title} — ${session.cwd}`
+      : `${session.title} — ${session.cwd}\nmatched: ${session.matchedRule}`;
 
   return (
     <button
       type="button"
       onClick={() => onSelect(session.id)}
       aria-current={selected}
-      title={`${session.title} — ${session.cwd}`}
+      title={title}
       className={cn(
         'group flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent',
@@ -73,6 +91,14 @@ export function SessionRow({ session, selected, now, onSelect }: SessionRowProps
         </span>
         <span className="block truncate text-[11px] text-base-400">
           {session.harnessName} · {formatElapsed(session.statusChangedAt, now)}
+          {/* Appended to the existing line, never a new one: the rule can appear
+              and disappear with a status change without moving anything. */}
+          {showMatchedRule && session.matchedRule !== undefined && (
+            <>
+              {' · '}
+              <span className="font-mono text-base-500">{session.matchedRule}</span>
+            </>
+          )}
         </span>
       </span>
 

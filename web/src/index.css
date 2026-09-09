@@ -27,8 +27,14 @@
   /* Status colors — shared with the sidebar / status dots. */
   --color-status-busy: #4c8dff;
   --color-status-waiting: #f0a52e;
+  /* Finished-and-unseen. Green because it asks to be looked at; amber and this
+     are the only two colours in the app that mean "you". */
+  --color-status-done: #3fb950;
   --color-status-idle: #7b8794;
   --color-status-exited: #4a525c;
+  /* You killed it. Violet keeps it distinct from `exited` (it went on its own)
+     and from `error` (it broke) without shouting like either. */
+  --color-status-killed: #7c6bb0;
   --color-status-error: #f0553c;
 
   --font-mono:

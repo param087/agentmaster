@@ -39,6 +39,7 @@ export function AttentionQueue({ sessions, selectedId, now, onSelect }: Attentio
             session={session}
             selected={session.id === selectedId}
             now={now}
+            showMatchedRule
             onSelect={onSelect}
           />
         ))}

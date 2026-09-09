@@ -10,7 +10,7 @@ const KIND_COPY: Record<NotifyKind, { label: string; hint: string }> = {
     label: 'Waiting for input',
     hint: 'A session is blocked on you and will wait forever. Recommended on.',
   },
-  finished: { label: 'Finished', hint: 'A long run went quiet.' },
+  done: { label: 'Done', hint: 'A long run finished. Opening the session clears it.' },
   exited: { label: 'Exited', hint: 'The harness process ended cleanly.' },
   error: { label: 'Error', hint: 'The harness exited with a non-zero code.' },
 };
