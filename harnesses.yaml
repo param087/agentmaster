@@ -1,0 +1,53 @@
+defaults:
+  idle_ms: 2500
+  finished_after_busy_ms: 20000
+
+harnesses:
+  - id: opencode
+    name: opencode
+    command: opencode
+    waiting_input:
+      - match: "(?i)allow this (tool|command)\\?"
+        kind: permission
+        actions:
+          - { label: "Allow", keys: "\r" }
+          - { label: "Deny", keys: "\u001b" }
+
+  - id: claude-code
+    name: Claude Code
+    command: claude
+    busy_marker: "esc to interrupt"
+    waiting_input:
+      - match: "Do you want to (proceed|make this edit|create)"
+        kind: permission
+        actions:
+          - { label: "Yes", keys: "1\r" }
+          - { label: "Allow all", keys: "2\r" }
+          - { label: "No", keys: "3\r" }
+      - match: "❯ \\d+\\. "
+        kind: menu
+
+  - id: gemini-cli
+    name: Gemini CLI
+    command: gemini
+    waiting_input:
+      - match: "(?i)allow execution\\?|apply this change\\?"
+        kind: permission
+
+  - id: codex
+    name: Codex CLI
+    command: codex
+    waiting_input:
+      - match: "(?i)approve\\?|allow command\\?"
+        kind: permission
+
+  - id: qwen-code
+    name: Qwen Code
+    command: qwen
+    waiting_input:
+      - match: "(?i)allow execution\\?"
+        kind: permission
+
+  - id: pi
+    name: PI
+    command: pi
