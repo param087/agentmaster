@@ -31,8 +31,14 @@ harnesses:
     name: Gemini CLI
     command: gemini
     waiting_input:
-      - match: "(?i)allow execution\\?|apply this change\\?"
+      # Gemini renders "Allow execution of '<command>'?", not a bare
+      # "Allow execution?" — verified against test/fixtures/gemini-permission.cast.
+      - match: "(?i)allow execution[^\\n]*\\?|apply this change\\?"
         kind: permission
+        actions:
+          - { label: "Yes, once", keys: "1\r" }
+          - { label: "Yes, always", keys: "2\r" }
+          - { label: "No", keys: "3\r" }
 
   - id: codex
     name: Codex CLI
@@ -44,8 +50,9 @@ harnesses:
   - id: qwen-code
     name: Qwen Code
     command: qwen
+    # Qwen Code is a Gemini CLI fork and shares its prompt wording.
     waiting_input:
-      - match: "(?i)allow execution\\?"
+      - match: "(?i)allow execution[^\\n]*\\?"
         kind: permission
 
   - id: pi
