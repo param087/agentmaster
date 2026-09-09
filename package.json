@@ -14,7 +14,9 @@
     "build": "npm run build --workspace=web",
     "test": "npm run test --workspace=server",
     "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=web",
-    "icons:sync": "node scripts/sync-harness-icons.mjs"
+    "icons:sync": "node scripts/sync-harness-icons.mjs",
+    "mobile": "npm run build && node scripts/mobile.mjs",
+    "tunnel:off": "tailscale serve --https=8443 off"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
