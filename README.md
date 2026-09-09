@@ -410,6 +410,21 @@ cooldown. The browser only applies your local mutes.
 **The database is history, not state.** Sessions die with the server, so any row
 left open on boot is marked exited.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+### Third-party assets
+
+The harness brand marks in `web/src/components/harness-marks.ts` are vendored
+from [simple-icons](https://simple-icons.org), which is licensed CC0-1.0. Six
+paths are copied rather than depended on because the package is ~50 MB installed.
+
+The logos themselves remain **trademarks of their respective owners** — Anthropic,
+Google, OpenAI, Alibaba, Cline and others — and are used here only to identify
+which tool a session is running. This project is not affiliated with, endorsed
+by, or sponsored by any of them.
+
 ## Not in v1
 
 Remote access, auth, multi-user, session persistence across restarts, cost
