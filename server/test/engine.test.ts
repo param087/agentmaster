@@ -152,6 +152,71 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'done']);
   });
 
+  it('treats a submitted turn as done even when it is over quickly', async () => {
+    const { engine: e, clock } = makeEngine();
+    e.onInput('explain pseudo-terminals\r');
+    // Output must span at least MIN_TURN_OUTPUT_MS to count as a real turn.
+    await e.onData('a pseudo-terminal is');
+    clock.advance(800);
+    await e.onData('... a kernel device pair.\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('done');
+  });
+
+  it('ignores the keystroke echo that precedes real work', async () => {
+    const { engine: e, clock } = makeEngine();
+    e.onInput('explain pseudo-terminals\r');
+    // The harness echoes instantly, then thinks silently for longer than
+    // idleMs. That gap must settle as idle, not as a premature done.
+    await e.onData('explain pseudo-terminals');
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+
+    // ...and the real answer that follows still lands on done.
+    await e.onData('a pseudo-terminal is');
+    clock.advance(800);
+    await e.onData('... a kernel device pair.\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('done');
+  });
+
+  it('does not go done for plain typing with no submit', async () => {
+    const { engine: e, clock } = makeEngine();
+    // Keystrokes echo back as output; without this guard a single typed
+    // character would turn green 2.5s later.
+    e.onInput('h');
+    await e.onData('h');
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+  });
+
+  it('does not go done for unprompted startup output', async () => {
+    const { engine: e, clock } = makeEngine();
+    await e.onData('booting TUI...\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+  });
+
+  it('clears the outstanding turn once acknowledged', async () => {
+    const { engine: e, clock } = makeEngine();
+    e.onInput('go\r');
+    await e.onData('working');
+    clock.advance(800);
+    await e.onData(' done\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('done');
+
+    e.acknowledge();
+    expect(e.current.status).toBe('idle');
+
+    // Stray output after the turn was seen is just idle, not green again.
+    await e.onData('a late stray byte');
+    clock.advance(800);
+    await e.onData(' more\r\n');
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+  });
+
   it('acknowledge() on done emits idle', async () => {
     const { engine: e, clock, seen } = makeEngine();
     for (let i = 0; i < 13; i++) {

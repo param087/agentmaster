@@ -1,8 +1,0 @@
-- generic [ref=f1e3]:
-  - banner [ref=f1e4]:
-    - generic [ref=f1e5]: agentmaster
-    - combobox [ref=f1e6]:
-      - option "no sessions" [selected]
-    - button "New opencode session in $HOME" [ref=f1e7]
-  - main [ref=f1e8]:
-    - generic [ref=f1e9]: Select or create a session to see its terminal.

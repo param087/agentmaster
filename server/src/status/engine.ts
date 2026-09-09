@@ -6,6 +6,12 @@ import type { QuickAction, SessionStatus, WaitKind } from './types.js';
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
+/**
+ * Minimum output span before a submitted turn counts as finished. Filters out
+ * the keystroke echo that precedes the harness actually starting work.
+ */
+const MIN_TURN_OUTPUT_MS = 500;
+
 const DEFAULT_TAIL_LINES = 30;
 
 export interface StatusSnapshot {
@@ -61,6 +67,8 @@ export class StatusEngine extends EventEmitter {
   private timer: TimerHandle | undefined;
   private busySince: number | undefined;
   private lastDataAt: number | undefined;
+  /** Set when the user submits a line; cleared once the turn settles. */
+  private submitted = false;
   private snapshot: StatusSnapshot;
   private disposed = false;
 
@@ -98,6 +106,19 @@ export class StatusEngine extends EventEmitter {
   }
 
   /**
+   * Records user input so a completed turn can be told apart from idleness.
+   *
+   * Only a submit (CR/LF) counts. Ordinary keystrokes echo back as output, so
+   * treating every byte as a submit would turn a single typed character into a
+   * green "done" two and a half seconds later.
+   */
+  onInput(data: string | Uint8Array): void {
+    if (this.disposed || this.isTerminal()) return;
+    const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+    if (text.includes('\r') || text.includes('\n')) this.submitted = true;
+  }
+
+  /**
    * Marks a `done` session as seen, dropping it back to `idle`.
    *
    * A no-op (and silent) in every other status, so callers can fire it
@@ -106,6 +127,9 @@ export class StatusEngine extends EventEmitter {
   acknowledge(): void {
     if (this.disposed) return;
     if (this.snapshot.status !== 'done') return;
+    // The turn has been seen, so it stops counting as outstanding. Without this
+    // any later stray output would turn the session green again.
+    this.submitted = false;
     this.transition({ status: 'idle' });
   }
 
@@ -175,18 +199,32 @@ export class StatusEngine extends EventEmitter {
       return;
     }
 
-    // A long stretch of work that has now gone quiet is a *finished task*, not
-    // mere quiet. `done` stays until someone acknowledges it.
+    // Quiet after work is a *finished turn*, not mere quiet. `done` stays until
+    // someone acknowledges it.
     //
-    // Measured from first to LAST byte, not to now: `now` is always exactly
-    // `idleMs` past the last byte, so including it would silently lower the
-    // threshold by 2.5s and make `finished_after_busy_ms` mean something other
-    // than "produced output for this long".
-    const wasLongBusy =
-      this.busySince !== undefined &&
-      this.lastDataAt !== undefined &&
-      this.lastDataAt - this.busySince > this.harness.finishedAfterBusyMs;
-    this.transition({ status: wasLongBusy ? 'done' : 'idle' });
+    // Duration alone is a poor signal: a three-second answer is just as finished
+    // as a three-minute one, and agent CLIs end their turn rather than blocking.
+    // What distinguishes "it did something for you" from "it is just sitting
+    // there" is whether you submitted anything. So `done` means:
+    //
+    //   you pressed Enter and it then produced a real stretch of output
+    //   ...or it worked autonomously for longer than finishedAfterBusyMs
+    //
+    // MIN_TURN_OUTPUT_MS guards the gap between your keystrokes echoing back and
+    // the harness actually starting work: opencode echoes in ~50ms and can then
+    // think silently for well over idleMs, which would otherwise settle as a
+    // premature "done" — and fire a "finished" notification mid-thought.
+    //
+    // `submitted` is deliberately NOT cleared here. The turn stays outstanding
+    // until it is acknowledged, so the echo gap resolves to idle and the real
+    // completion that follows still lands on done.
+    const span =
+      this.busySince !== undefined && this.lastDataAt !== undefined
+        ? this.lastDataAt - this.busySince
+        : 0;
+    const finishedTurn = this.submitted && span >= MIN_TURN_OUTPUT_MS;
+    const longRun = span > this.harness.finishedAfterBusyMs;
+    this.transition({ status: finishedTurn || longRun ? 'done' : 'idle' });
   }
 
   private transition(next: Omit<StatusSnapshot, 'at'>): void {

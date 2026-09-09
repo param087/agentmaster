@@ -65,11 +65,30 @@ npm rebuild node-pty better-sqlite3
 ## Using it
 
 - **+ New** — pick a harness and a folder; the session spawns and appears in the sidebar
-- **Sidebar** — one dot per session: 🔵 busy · 🟠 waiting on you · ⚪ idle · ⚫ exited · 🔴 error
-- **Needs attention** — sessions blocked on you, longest-waiting first
+- **Sidebar** — one dot per session:
+
+| Colour | Status | Meaning |
+|---|---|---|
+| 🔵 blue (pulsing) | Working | producing output |
+| 🟠 amber | Waiting for you | blocked on a menu, permission or login — **the only state that needs action** |
+| 🟢 green | Done | finished a turn and you haven't looked yet; opening it clears the green |
+| ⚪ grey | Idle | alive and quiet |
+| 🟣 violet | Killed | you pressed Kill |
+| ⚫ dim grey | Exited | quit on its own |
+| 🔴 red | Error | non-zero exit |
+
+- **Needs attention** — amber sessions, longest-waiting first
 - **Quick actions** — when a session is blocked, its harness's answer buttons appear under the terminal. They send keystrokes; a click is indistinguishable from typing.
-- **Notifications** — desktop notification when a session needs you, finishes, or crashes. Enable via the gear icon. They work while the tab is open in the background; there is no service worker in v1.
+- **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Notifications work while the tab is open in the background; there is no service worker in v1.
 - `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
+
+### Green vs amber
+
+Agent CLIs mostly **end their turn** rather than blocking on a prompt, so
+"finished, your move" is the common case and gets its own colour. A session goes
+green when you submitted something, it produced output, and then went quiet —
+and only if nobody was watching. Amber is reserved for a harness that is
+genuinely stuck on a modal choice and cannot continue without you.
 
 **Sessions are killed when the server stops.** This is deliberate for v1.
 
@@ -110,19 +129,39 @@ notifications, and quick actions.
 
 ## Verifying detection against a real CLI
 
-The shipped regexes for `claude-code`, `opencode`, `codex` and `pi` are
-reconstructions and **unverified against real output**. `gemini-cli` and
-`qwen-code` were corrected after a fixture caught that the original pattern
-could never match. To verify one yourself:
+`opencode` and `pi` rules are **verified** against fixtures captured from the
+real CLIs (opencode 1.18.30, pi 0.85.1) and asserted in
+`server/test/detection.test.ts`. Both auto-approve tool calls, so neither has a
+permission prompt — their only modal blocked state is a selection widget.
+
+`claude-code`, `gemini-cli`, `codex` and `qwen-code` are **unverified**
+reconstructions that pass synthetic fixtures only. To verify one:
 
 ```bash
+# unattended: drives the CLI through the running server
+npx tsx server/scripts/capture.ts claude-code claude-permission \
+  --cwd /tmp/x --send $'edit README.md\r' --wait 30000
+
+# or interactively, driving it yourself in a real terminal
 npx tsx server/scripts/record-fixture.ts claude-code claude-permission
 ```
 
-Drive the CLI to the state you want captured, leave it on screen, press
-**Ctrl-]** to detach. Then add a row to the table in
-`server/test/detection.test.ts` and run `npm test`. If it fails, fix the regex in
-`harnesses.yaml` — never the fixture.
+Then add a row to the table in `server/test/detection.test.ts` and run
+`npm test`. If it fails, fix the regex in `harnesses.yaml` — never the fixture.
+**Every positive rule needs a matching negative fixture** proving it does not
+fire on an idle screen; a false amber is worse than a miss, because it trains
+you to ignore the one colour that means "act now".
+
+There is also a live scenario matrix that drives real harnesses end to end
+through the HTTP + WebSocket API:
+
+```bash
+npx tsx server/scripts/scenarios.ts
+```
+
+It asserts the whole journey — startup, done, acknowledgement, waiting, killed.
+Close any dashboard tab first: an open tab watches the session and correctly
+acknowledges `done` before the script can observe it.
 
 ## Commands
 

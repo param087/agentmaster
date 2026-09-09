@@ -148,6 +148,9 @@ export class PtySession extends EventEmitter {
 
   write(data: string | Buffer): void {
     if (this.exited || this.disposed) return;
+    // Told before the PTY, so the engine knows a turn was submitted by the time
+    // the resulting output comes back.
+    this.engine.onInput(data);
     this.pty.write(typeof data === 'string' ? data : data.toString('utf8'));
   }
 

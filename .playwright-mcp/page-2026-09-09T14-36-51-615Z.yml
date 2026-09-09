@@ -1,9 +1,0 @@
-- generic [ref=e3]:
-  - banner [ref=e4]:
-    - generic [ref=e5]: agentmaster
-    - combobox [ref=e6]:
-      - option "no sessions" [selected]
-    - button "New opencode session in $HOME" [ref=e7]
-    - generic [ref=e10]: "Working directory does not exist: ~"
-  - main [ref=e8]:
-    - generic [ref=e9]: Select or create a session to see its terminal.
