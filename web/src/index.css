@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+/*
+ * Dark, low-chroma palette for a tool that gets stared at for hours.
+ * Backgrounds are near-black neutrals with a faint cool cast; text is
+ * high-contrast but not pure white, which reduces halation on OLED.
+ *
+ * The terminal theme in `hooks/use-terminal.ts` mirrors these values.
+ */
+@theme {
+  --color-base-950: #0a0b0d;
+  --color-base-900: #101215;
+  --color-base-850: #16191d;
+  --color-base-800: #1c2025;
+  --color-base-700: #262b32;
+  --color-base-600: #363d46;
+  --color-base-500: #4d5661;
+  --color-base-400: #6b7784;
+  --color-base-300: #97a1ad;
+  --color-base-200: #c3cad3;
+  --color-base-100: #e2e6ea;
+
+  --color-accent: #5b9dff;
+  --color-accent-dim: #2f5c9e;
+
+  /* Status colors — shared with the sidebar / status dots. */
+  --color-status-busy: #4c8dff;
+  --color-status-waiting: #f0a52e;
+  --color-status-idle: #7b8794;
+  --color-status-exited: #4a525c;
+  --color-status-error: #f0553c;
+
+  --font-mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden; /* fixed app shell: panes scroll, the page never does */
+  background-color: var(--color-base-950);
+  color: var(--color-base-100);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--color-accent-dim);
+}
+
+/* The xterm viewport is the one place a scrollbar is expected. */
+.xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-base-600) transparent;
+}

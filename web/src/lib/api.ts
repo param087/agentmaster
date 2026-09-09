@@ -1,0 +1,94 @@
+import type { HarnessInfo, Session } from './types';
+
+/** A non-2xx response from the server, carrying its status and `{error}` message. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export interface DirEntry {
+  name: string;
+  path: string;
+}
+
+export interface LsResult {
+  path: string;
+  parent: string | null;
+  dirs: DirEntry[];
+}
+
+/** Best-effort extraction of the server's `{error}` body; falls back to the status text. */
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    if (typeof body === 'object' && body !== null && 'error' in body) {
+      const { error } = body as { error: unknown };
+      if (typeof error === 'string' && error.length > 0) return error;
+    }
+  } catch {
+    // Non-JSON error bodies (proxy failures, HTML pages) are not worth reporting verbatim.
+  }
+  return res.statusText || `Request failed with status ${res.status}`;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, init);
+  } catch (cause) {
+    // A dead server must not look like an empty result set.
+    throw new ApiError(cause instanceof Error ? cause.message : 'Network request failed', 0);
+  }
+
+  if (!res.ok) throw new ApiError(await errorMessage(res), res.status);
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+function jsonPost(body: unknown): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
+export const api = {
+  async harnesses(): Promise<HarnessInfo[]> {
+    const { harnesses } = await request<{ harnesses: HarnessInfo[] }>('/harnesses');
+    return harnesses;
+  },
+
+  async sessions(): Promise<Session[]> {
+    const { sessions } = await request<{ sessions: Session[] }>('/sessions');
+    return sessions;
+  },
+
+  async createSession(input: { harnessId: string; cwd: string; title?: string }): Promise<Session> {
+    const { session } = await request<{ session: Session }>('/sessions', jsonPost(input));
+    return session;
+  },
+
+  /** Kills the process but keeps the session listed so its output stays readable. */
+  killSession(id: string): Promise<void> {
+    return request<void>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  removeSession(id: string): Promise<void> {
+    return request<void>(`/sessions/${encodeURIComponent(id)}/remove`, { method: 'POST' });
+  },
+
+  sendInput(id: string, keys: string): Promise<void> {
+    return request<void>(`/sessions/${encodeURIComponent(id)}/input`, jsonPost({ keys }));
+  },
+
+  ls(path?: string): Promise<LsResult> {
+    const query = path === undefined ? '' : `?path=${encodeURIComponent(path)}`;
+    return request<LsResult>(`/fs/ls${query}`);
+  },
+};
