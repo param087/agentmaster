@@ -48,6 +48,10 @@ const KEYS: readonly KeyDef[] = [
   { id: 'Down', icon: ArrowDown, bytes: '\x1b[B', title: 'Arrow down' },
   { id: 'Left', icon: ArrowLeft, bytes: '\x1b[D', title: 'Arrow left' },
   { id: 'Right', icon: ArrowRight, bytes: '\x1b[C', title: 'Arrow right' },
+  // Phones have their own space bar, but reaching for the soft keyboard mid-menu
+  // dismisses the arrows you were using — and space is what toggles a selection
+  // in most TUI pickers. Keeping it here means never leaving the bar.
+  { id: 'Space', label: 'Space', bytes: ' ', title: 'Space', wide: true },
   { id: 'Enter', icon: CornerDownLeft, bytes: '\r', title: 'Enter' },
   { id: 'Slash', label: '/', bytes: '/', title: 'Slash (commands)' },
   { id: 'CtrlC', label: 'Ctrl-C', bytes: '\x03', title: 'Interrupt (SIGINT)', wide: true },

@@ -104,4 +104,9 @@ export const api = {
     const query = path === undefined ? '' : `?path=${encodeURIComponent(path)}`;
     return request<LsResult>(`/fs/ls${query}`);
   },
+
+  /** Creates one directory inside `parent`. `name` must be a single segment. */
+  mkdir(parent: string, name: string): Promise<{ path: string }> {
+    return request<{ path: string }>('/fs/mkdir', jsonPost({ parent, name }));
+  },
 };

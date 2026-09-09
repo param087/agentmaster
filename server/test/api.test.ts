@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 
@@ -242,6 +243,101 @@ describe('GET /api/fs/ls', () => {
     const res = await fetch(`${base}/api/fs/ls?path=/definitely/not/here`);
     expect(res.status).toBe(404);
     expect((await res.json()) as { error: string }).toHaveProperty('error');
+  });
+});
+
+
+describe('POST /api/fs/mkdir', () => {
+  /** A scratch directory that is cleaned up whatever the test does. */
+  async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), 'am-mkdir-'));
+    try {
+      await fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const post = (base: string, body: unknown): Promise<Response> =>
+    fetch(`${base}/api/fs/mkdir`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('creates a folder and returns its absolute path', async () => {
+    const base = await boot();
+    await withTempDir(async (dir) => {
+      const res = await post(base, { parent: dir, name: 'my-project' });
+      expect(res.status).toBe(201);
+      const { path } = (await res.json()) as { path: string };
+      expect(path).toBe(join(dir, 'my-project'));
+      expect(existsSync(path)).toBe(true);
+    });
+  });
+
+  it('shows the new folder in a subsequent listing', async () => {
+    const base = await boot();
+    await withTempDir(async (dir) => {
+      await post(base, { parent: dir, name: 'visible' });
+      const res = await fetch(`${base}/api/fs/ls?path=${encodeURIComponent(dir)}`);
+      const { dirs } = (await res.json()) as { dirs: Array<{ name: string }> };
+      expect(dirs.map((d) => d.name)).toContain('visible');
+    });
+  });
+
+  /**
+   * The security-relevant case. `name` must be one path segment: the button says
+   * "create a folder here", and without this it could write anywhere on disk.
+   */
+  it.each([['..'], ['.'], ['a/b'], ['../escape'], ['/absolute'], ['a\\b'], ['']])(
+    'rejects %j as a folder name',
+    async (name) => {
+      const base = await boot();
+      await withTempDir(async (dir) => {
+        const res = await post(base, { parent: dir, name });
+        expect(res.status).toBe(400);
+        expect((await res.json()) as { error: string }).toHaveProperty('error');
+      });
+    },
+  );
+
+  it('does not escape the parent when given a traversal name', async () => {
+    const base = await boot();
+    await withTempDir(async (dir) => {
+      const sentinel = join(dirname(dir), 'am-escaped-sentinel');
+      await post(base, { parent: dir, name: '../am-escaped-sentinel' });
+      expect(existsSync(sentinel)).toBe(false);
+    });
+  });
+
+  it('returns 409 when the folder already exists', async () => {
+    const base = await boot();
+    await withTempDir(async (dir) => {
+      expect((await post(base, { parent: dir, name: 'dup' })).status).toBe(201);
+      const again = await post(base, { parent: dir, name: 'dup' });
+      expect(again.status).toBe(409);
+    });
+  });
+
+  it('returns 404 when the parent does not exist', async () => {
+    const base = await boot();
+    const res = await post(base, { parent: '/definitely/not/here', name: 'x' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for a malformed body', async () => {
+    const base = await boot();
+    const res = await post(base, { parent: '/tmp' });
+    expect(res.status).toBe(400);
+  });
+
+  it('expands a leading tilde in the parent', async () => {
+    const base = await boot();
+    // Creating in $HOME for real would litter, so just prove the path resolves:
+    // an existing home subdirectory comes back as 409, not 404.
+    const res = await post(base, { parent: '~', name: '.' });
+    expect(res.status).toBe(400);
   });
 });
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronUp, Clock, Folder, Loader2 } from 'lucide-react';
+import { ChevronUp, Clock, Folder, FolderPlus, Loader2 } from 'lucide-react';
 
 import { api, ApiError, type LsResult } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -59,6 +59,10 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recent] = useState<string[]>(() => readRecent());
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const newNameRef = useRef<HTMLInputElement | null>(null);
 
   // Held in a ref so an inline `onChange` from the parent cannot re-trigger the
   // initial listing effect on every render.
@@ -82,6 +86,40 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
 
   // `~` is expanded server-side; the browser never needs to know the home path.
   useEffect(() => browse('~'), [browse]);
+
+  useEffect(() => {
+    if (creating) newNameRef.current?.focus();
+  }, [creating]);
+
+  const cancelCreate = (): void => {
+    setCreating(false);
+    setNewName('');
+  };
+
+  /**
+   * Creates the folder and navigates into it.
+   *
+   * Navigating *is* selecting in this picker, so browsing into the new folder
+   * also makes it the chosen one — no second click to pick what you just made.
+   */
+  const createFolder = (): void => {
+    const name = newName.trim();
+    const parent = listing?.path;
+    if (!name || !parent || saving) return;
+
+    setSaving(true);
+    void api
+      .mkdir(parent, name)
+      .then((result) => {
+        cancelCreate();
+        setError(null);
+        browse(result.path);
+      })
+      .catch((cause: unknown) => {
+        setError(cause instanceof ApiError ? cause.message : String(cause));
+      })
+      .finally(() => setSaving(false));
+  };
 
   const trail = listing ? crumbs(listing.path) : [];
   const parent = listing?.parent ?? null;
@@ -110,21 +148,88 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
         </div>
       )}
 
-      <div className="flex items-center gap-0.5 overflow-x-auto whitespace-nowrap rounded-md border border-base-700 bg-base-950 px-2 py-1.5 text-[11px]">
-        {trail.map((crumb, index) => (
-          <span key={crumb.path} className="flex items-center gap-0.5">
-            {index > 0 && <span className="text-base-600">/</span>}
-            <button
-              type="button"
-              onClick={() => browse(crumb.path)}
-              className="rounded px-0.5 text-base-300 transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-            >
-              {crumb.label}
-            </button>
-          </span>
-        ))}
-        {loading && <Loader2 className="ml-1 size-3 animate-spin text-base-500" aria-label="Loading" />}
+      <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto whitespace-nowrap rounded-md border border-base-700 bg-base-950 px-2 py-1.5 text-[11px]">
+          {trail.map((crumb, index) => (
+            <span key={crumb.path} className="flex items-center gap-0.5">
+              {index > 0 && <span className="text-base-600">/</span>}
+              <button
+                type="button"
+                onClick={() => browse(crumb.path)}
+                className="rounded px-0.5 text-base-300 transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              >
+                {crumb.label}
+              </button>
+            </span>
+          ))}
+          {loading && (
+            <Loader2 className="ml-1 size-3 animate-spin text-base-500" aria-label="Loading" />
+          )}
+        </div>
+
+        {/*
+          Scoped to the directory currently on screen, which is why it sits on
+          the breadcrumb row rather than in the listing — as a list row it would
+          read like an existing folder.
+        */}
+        <button
+          type="button"
+          onClick={() => (creating ? cancelCreate() : setCreating(true))}
+          disabled={loading || listing === null}
+          aria-expanded={creating}
+          title="Create a folder in this directory"
+          className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-base-700 bg-base-850 px-2 text-[11px] text-base-300 transition-colors hover:border-base-600 hover:text-base-100 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+        >
+          <FolderPlus className="size-3.5" />
+          New
+        </button>
       </div>
+
+      {creating && (
+        <div className="flex items-center gap-1">
+          <input
+            ref={newNameRef}
+            value={newName}
+            onChange={(event) => setNewName(event.target.value)}
+            onKeyDown={(event) => {
+              // Scoped to the input: Escape must cancel the folder row, not
+              // close the whole New Session dialog underneath it.
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                createFolder();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelCreate();
+              }
+            }}
+            placeholder="Folder name"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="h-10 min-w-0 flex-1 rounded-md border border-base-700 bg-base-950 px-2 text-[12px] text-base-100 placeholder:text-base-500 focus:border-accent-dim focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={createFolder}
+            aria-label="Create folder"
+            // "Add", not "Create": the dialog's own submit button is already
+            // "Create", and two identically-labelled buttons in one modal is
+            // ambiguous both visually and to a screen reader.
+            disabled={saving || newName.trim() === ''}
+            className="inline-flex h-10 shrink-0 items-center rounded-md border border-accent-dim bg-accent/10 px-2.5 text-[11px] text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            {saving ? 'Adding…' : 'Add'}
+          </button>
+          <button
+            type="button"
+            onClick={cancelCreate}
+            className="inline-flex h-10 shrink-0 items-center rounded-md border border-base-700 bg-base-850 px-2.5 text-[11px] text-base-300 transition-colors hover:text-base-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       <div className="h-48 overflow-y-auto rounded-md border border-base-700 bg-base-950 p-1">
         {parent !== null && (

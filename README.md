@@ -146,6 +146,17 @@ Notes:
 - Rendered lines keep leading indentation, so tolerate it: `^\s*❯?\s*\d+\.`
 - `keys` are sent verbatim — `"\r"` Enter, `"\u001b"` Esc, `"1\r"` menu choice.
 
+### Creating a folder
+
+The folder picker in **+ New** has a **New** button beside the breadcrumbs that
+creates a directory in whichever folder you are currently browsing, then
+navigates into it — so the folder you just made is the one the session starts in.
+
+It creates exactly one level, and the name must be a single path segment:
+`..`, `a/b` and absolute paths are rejected. Browsing has no path jail (it is
+your own machine), but a button labelled "create a folder here" should not be
+able to write somewhere else.
+
 ### Adding a harness
 
 Add an entry with `id`, `name`, `command`. That alone gives you a terminal,
@@ -299,8 +310,11 @@ round it:
   asks first.
 
 The key bar along the bottom supplies what a phone keyboard lacks — `Esc`,
-`Tab`, `⇧Tab`, `Ctrl`, arrows, `Ctrl-C`. Without it plan mode, `/model` and
-interrupting a run are unreachable. `Ctrl` is sticky: tap it, then a letter.
+`Tab`, `⇧Tab`, `Ctrl`, arrows, `Space`, `Enter`, `/`, `Ctrl-C`. Without it plan
+mode, `/model` and interrupting a run are unreachable. `Ctrl` is sticky: tap it,
+then a key — `Ctrl` then `Space` sends NUL, like a real terminal. `Space` is on
+the bar even though phones have one, because reaching for the soft keyboard
+mid-menu dismisses the arrows you were using.
 
 ## Commands
 
