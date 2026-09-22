@@ -50,3 +50,12 @@ export async function runCommand(page: Page, command: string): Promise<void> {
   await typeInTerminal(page, command);
   await page.keyboard.press('Enter');
 }
+
+/** Terminal text for a specific session, when several panes are mounted. */
+export function terminalTextFor(page: Page, sessionId: string): Promise<string> {
+  return page.evaluate(
+    (id) =>
+      (window as unknown as { __terms?: Record<string, { text: () => string }> }).__terms?.[id]?.text() ?? '',
+    sessionId,
+  );
+}

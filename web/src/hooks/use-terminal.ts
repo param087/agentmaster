@@ -175,7 +175,7 @@ interface TerminalProbe {
   bufferType: () => string;
 }
 
-function exposeForTests(term: Terminal): () => void {
+function exposeForTests(term: Terminal, sessionId: string): () => void {
   let enabled = false;
   try {
     enabled = window.localStorage.getItem('e2e') === '1';
@@ -196,10 +196,12 @@ function exposeForTests(term: Terminal): () => void {
     baseY: () => term.buffer.active.baseY,
     bufferType: () => term.buffer.active.type,
   };
-  const host = window as unknown as { __term?: TerminalProbe };
+  const host = window as unknown as { __term?: TerminalProbe; __terms?: Record<string, TerminalProbe> };
   host.__term = probe;
+  host.__terms = { ...host.__terms, [sessionId]: probe };
   return () => {
     if (host.__term === probe) delete host.__term;
+    if (host.__terms?.[sessionId] === probe) delete host.__terms[sessionId];
   };
 }
 
@@ -268,7 +270,7 @@ export function useTerminal(
 
     term.open(container);
     termRef.current = term;
-    const unexpose = exposeForTests(term);
+    const unexpose = exposeForTests(term, sessionId);
 
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);

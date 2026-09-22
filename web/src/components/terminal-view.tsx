@@ -94,6 +94,11 @@ export interface TerminalViewProps {
    * has painted. Drives the header's "Fit to screen".
    */
   onFitPlanReady?: (plan: (() => TerminalDims | null) | null) => void;
+  /**
+   * Whether this is the focused pane. Only the active view claims ⌘F; in a
+   * split layout every other pane stays passive.
+   */
+  active?: boolean;
   /** Receives a prompt sender that honours the program's bracketed-paste mode. */
   onSendPromptReady?: (send: ((text: string) => void) | null) => void;
 }
@@ -105,6 +110,7 @@ export function TerminalView({
   onInputTransformReady,
   onFitPlanReady,
   onSendPromptReady,
+  active = true,
 }: TerminalViewProps) {
   const {
     containerRef,
@@ -140,7 +146,7 @@ export function TerminalView({
   // ⌘F opens find. Captured so the browser's own find bar — which cannot see
   // into a canvas-rendered terminal — never opens instead.
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!isPrimaryModifier(event) || event.altKey || event.key.toLowerCase() !== 'f') return;
       event.preventDefault();
@@ -148,7 +154,7 @@ export function TerminalView({
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [sessionId]);
+  }, [sessionId, active]);
 
   useEffect(() => setSearchOpen(false), [sessionId]);
   // Gestures are enabled where the fit-scale is genuinely unreadable: a finger

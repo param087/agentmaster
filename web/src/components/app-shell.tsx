@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   BellOff,
+  Columns2,
+  Grid2x2,
+  Square,
   Maximize2,
   Menu,
   MoreVertical,
@@ -22,6 +25,16 @@ import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
 import { TERM_COLS, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal';
+import {
+  focusPane,
+  initialPanes,
+  PANE_LAYOUTS,
+  pruneMissing,
+  setLayout,
+  showSession,
+  type PaneLayout,
+  type PaneState,
+} from '../lib/panes';
 import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
 import { NewSessionDialog } from './new-session-dialog';
@@ -52,6 +65,27 @@ function useClock(): number {
   }, []);
   return now;
 }
+
+const LAYOUT_KEY = 'agentmaster.paneLayout';
+
+function readStoredLayout(): PaneLayout {
+  try {
+    const value = Number(window.localStorage.getItem(LAYOUT_KEY));
+    return (PANE_LAYOUTS as readonly number[]).includes(value) ? (value as PaneLayout) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function storeLayout(layout: PaneLayout): void {
+  try {
+    window.localStorage.setItem(LAYOUT_KEY, String(layout));
+  } catch {
+    // Private mode: the layout just won't persist.
+  }
+}
+
+const LAYOUT_ICON: Record<PaneLayout, typeof Square> = { 1: Square, 2: Columns2, 4: Grid2x2 };
 
 const HEADER_BUTTON =
   'inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 ' +
@@ -125,8 +159,39 @@ export function AppShell({
    * server's fixed 120x32. Per session, and dropped on switch: it is a
    * deliberate, confirmed action, never something inherited by accident.
    */
-  const [ptyDims, setPtyDims] = useState<TerminalDims | null>(null);
-  useEffect(() => setPtyDims(null), [selectedId]);
+  // Keyed by session: with several panes open, focusing another pane must not
+  // silently reconnect (and so un-resize) the one you just fitted.
+  const [ptyDimsFor, setPtyDimsFor] = useState<{ sessionId: string; dims: TerminalDims } | null>(null);
+  const ptyDims = ptyDimsFor !== null && ptyDimsFor.sessionId === selectedId ? ptyDimsFor.dims : null;
+  const setPtyDims = useCallback(
+    (dims: TerminalDims | null): void => {
+      setPtyDimsFor(dims !== null && selectedId !== null ? { sessionId: selectedId, dims } : null);
+    },
+    [selectedId],
+  );
+
+  // ---- split panes (desktop only) ----------------------------------------
+  const [paneState, setPaneState] = useState<PaneState>(() =>
+    initialPanes(readStoredLayout(), selectedId),
+  );
+  useEffect(() => {
+    if (selectedId !== null) setPaneState((state) => showSession(state, selectedId));
+  }, [selectedId]);
+  useEffect(() => {
+    setPaneState((state) => pruneMissing(state, new Set(sessions.map((s) => s.id))));
+  }, [sessions]);
+  const changeLayout = (layout: PaneLayout): void => {
+    storeLayout(layout);
+    setPaneState((state) => setLayout(state, layout));
+  };
+  const focusPaneAt = (index: number): void => {
+    setPaneState((state) => focusPane(state, index));
+    const id = paneState.panes[index];
+    if (id) onSelect(id);
+  };
+  const layout: PaneLayout = narrow ? 1 : paneState.layout;
+  const visiblePanes: (string | null)[] = narrow ? [selectedId] : paneState.panes;
+  const focusedPane = narrow ? 0 : paneState.focused;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
@@ -361,6 +426,11 @@ export function AppShell({
     </button>
   );
 
+  // Secondary header labels collapse to icons on mid-width desktops, where six
+  // labelled buttons would push the session title off screen. The phone menu
+  // always shows them: it has the room, and icons alone are ambiguous there.
+  const secondaryLabel = narrow ? '' : 'hidden xl:inline';
+
   const timelineButton = selected && (
     <button
       type="button"
@@ -369,11 +439,12 @@ export function AppShell({
         setTimelineOpen((open) => !open);
       }}
       aria-pressed={timelineOpen}
+      aria-label="Timeline"
       title="Where this session's time went"
       className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
     >
       <History className="size-3.5" />
-      Timeline
+      <span className={secondaryLabel}>Timeline</span>
     </button>
   );
 
@@ -385,11 +456,12 @@ export function AppShell({
         runAction(api.updateSession(selected.id, { muted: !selected.muted }).then(() => undefined));
       }}
       aria-pressed={selected.muted === true}
+      aria-label={selected.muted ? 'Unmute' : 'Mute'}
       title={selected.muted ? 'Notify about this session again' : 'No notifications from this session'}
       className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
     >
       {selected.muted ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
-      {selected.muted ? 'Unmute' : 'Mute'}
+      <span className={secondaryLabel}>{selected.muted ? 'Unmute' : 'Mute'}</span>
     </button>
   );
 
@@ -401,11 +473,12 @@ export function AppShell({
         runAction(api.updateSession(selected.id, { pinned: !selected.pinned }).then(() => undefined));
       }}
       aria-pressed={selected.pinned === true}
+      aria-label={selected.pinned ? 'Unpin' : 'Pin'}
       title={selected.pinned ? 'Unpin from the top of the list' : 'Pin to the top of the list'}
       className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
     >
       {selected.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
-      {selected.pinned ? 'Unpin' : 'Pin'}
+      <span className={secondaryLabel}>{selected.pinned ? 'Unpin' : 'Pin'}</span>
     </button>
   );
 
@@ -421,7 +494,9 @@ export function AppShell({
       className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
     >
       <Maximize2 className="size-3.5" />
-      {ptyDims ? `${ptyDims.cols}×${ptyDims.rows} · Reset` : 'Fit to screen'}
+      <span className={secondaryLabel}>
+        {ptyDims ? `${ptyDims.cols}×${ptyDims.rows} · Reset` : 'Fit to screen'}
+      </span>
     </button>
   );
 
@@ -595,6 +670,26 @@ export function AppShell({
                 </>
               ) : (
                 <>
+                  <div role="group" aria-label="Pane layout" className="flex overflow-hidden rounded-md border border-base-700">
+                    {PANE_LAYOUTS.map((option) => {
+                      const Icon = LAYOUT_ICON[option];
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          aria-label={option === 1 ? 'Single pane' : `${option} panes`}
+                          aria-pressed={paneState.layout === option}
+                          onClick={() => changeLayout(option)}
+                          className={cn(
+                            'px-1.5 py-1 transition-colors',
+                            paneState.layout === option ? 'bg-base-700 text-base-100' : 'text-base-400 hover:text-base-100',
+                          )}
+                        >
+                          <Icon className="size-3.5" />
+                        </button>
+                      );
+                    })}
+                  </div>
                   {timelineButton}
                   {muteButton}
                   {pinButton}
@@ -619,14 +714,66 @@ export function AppShell({
           {timelineOpen && selected && (
             <TimelinePanel session={selected} now={now} onClose={() => setTimelineOpen(false)} />
           )}
-          <TerminalView
-            sessionId={selectedId}
-            dims={ptyDims}
-            onSendReady={handleSendReady}
-            onInputTransformReady={handleInputTransformReady}
-            onFitPlanReady={handleFitPlanReady}
-            onSendPromptReady={handleSendPromptReady}
-          />
+          <div
+            className={cn(
+              'grid h-full min-h-0 gap-px bg-base-800',
+              layout === 1 && 'grid-cols-1',
+              layout === 2 && 'grid-cols-2',
+              layout === 4 && 'grid-cols-2 grid-rows-2',
+            )}
+          >
+            {visiblePanes.map((paneId, index) => {
+              const focused = index === focusedPane;
+              const paneSession = sessions.find((s) => s.id === paneId) ?? null;
+              const terminal = (
+                <TerminalView
+                  sessionId={paneId}
+                  active={focused}
+                  dims={ptyDimsFor !== null && ptyDimsFor.sessionId === paneId ? ptyDimsFor.dims : null}
+                  onSendReady={focused ? handleSendReady : undefined}
+                  onInputTransformReady={focused ? handleInputTransformReady : undefined}
+                  onFitPlanReady={focused ? handleFitPlanReady : undefined}
+                  onSendPromptReady={focused ? handleSendPromptReady : undefined}
+                />
+              );
+              if (layout === 1) return <div key={index} className="min-h-0">{terminal}</div>;
+              return (
+                <section
+                  key={index}
+                  aria-label={`Pane ${index + 1}`}
+                  onPointerDownCapture={() => {
+                    if (!focused) focusPaneAt(index);
+                  }}
+                  className={cn(
+                    'flex min-h-0 min-w-0 flex-col bg-base-950',
+                    focused ? 'ring-1 ring-inset ring-accent-dim' : 'opacity-90',
+                  )}
+                >
+                  <div className="flex shrink-0 items-center gap-1.5 border-b border-base-800 px-2 py-0.5 text-[11px]">
+                    {paneSession ? (
+                      <>
+                        <StatusDot status={paneSession.status} />
+                        <span className={cn('truncate', focused ? 'text-base-100' : 'text-base-400')}>
+                          {paneSession.title}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-base-500">Empty</span>
+                    )}
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    {paneId === null ? (
+                      <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-base-500">
+                        {focused ? 'Pick a session in the sidebar to show it here.' : 'Click to focus, then pick a session.'}
+                      </div>
+                    ) : (
+                      terminal
+                    )}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         </div>
 
         {selected && (
