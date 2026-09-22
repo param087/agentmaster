@@ -4,6 +4,17 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Long-lived vendor chunks: an app deploy does not re-download xterm.
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          xterm: ['@xterm/xterm', '@xterm/addon-search', '@xterm/addon-serialize'],
+        },
+      },
+    },
+  },
   server: {
     port: 5273,
     proxy: {

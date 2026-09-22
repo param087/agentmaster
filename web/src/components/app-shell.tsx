@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   BellOff,
@@ -39,7 +39,6 @@ import {
 } from '../lib/panes';
 import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
-import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
 import { PromptComposer } from './prompt-composer';
 import { formatPrompt } from '../lib/prompt';
@@ -47,12 +46,18 @@ import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
 import { EditableTitle } from './editable-title';
 import { ExportMenu, type TerminalExport } from './export-menu';
-import { TimelinePanel } from './timeline-panel';
-import { GitPanel } from './git-panel';
-import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
 import { TerminalView } from './terminal-view';
+
+// Dialogs and side panels load on first open: none of them are needed to show
+// a terminal, which is what a cold start on a phone is waiting for.
+const NewSessionDialog = lazy(() =>
+  import('./new-session-dialog').then((m) => ({ default: m.NewSessionDialog })),
+);
+const SettingsDialog = lazy(() => import('./settings-dialog').then((m) => ({ default: m.SettingsDialog })));
+const TimelinePanel = lazy(() => import('./timeline-panel').then((m) => ({ default: m.TimelinePanel })));
+const GitPanel = lazy(() => import('./git-panel').then((m) => ({ default: m.GitPanel })));
 
 const CLOCK_TICK_MS = 1000;
 
@@ -768,10 +773,12 @@ export function AppShell({
         )}
 
         <div className="relative min-h-0 flex-1">
-          {timelineOpen && selected && (
-            <TimelinePanel session={selected} now={now} onClose={() => setPanel(null)} />
-          )}
-          {panel === 'git' && selected && <GitPanel session={selected} onClose={() => setPanel(null)} />}
+          <Suspense fallback={null}>
+            {timelineOpen && selected && (
+              <TimelinePanel session={selected} now={now} onClose={() => setPanel(null)} />
+            )}
+            {panel === 'git' && selected && <GitPanel session={selected} onClose={() => setPanel(null)} />}
+          </Suspense>
           <div
             className={cn(
               'grid h-full min-h-0 gap-px bg-base-800',
@@ -861,6 +868,7 @@ export function AppShell({
         )}
       </main>
 
+      <Suspense fallback={null}>
       {newOpen && (
         <NewSessionDialog
           onClose={() => setNewOpen(false)}
@@ -897,6 +905,7 @@ export function AppShell({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      </Suspense>
     </div>
   );
 }

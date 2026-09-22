@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
-import { WebglAddon } from '@xterm/addon-webgl';
+import type { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search';
 import { SerializeAddon } from '@xterm/addon-serialize';
 
@@ -322,19 +322,24 @@ export function useTerminal(
     // font measurement, and attaching WebGL before that settles binds the
     // renderer to a half-measured grid.
     let webgl: WebglAddon | null = null;
+    // Imported on demand: the renderer is a sizeable chunk and only useful once
+    // a terminal is actually on screen.
     const webglFrame = requestAnimationFrame(() => {
       if (cancelled || container.clientWidth === 0) return;
-      try {
-        const addon = new WebglAddon();
-        addon.onContextLoss(() => {
-          addon.dispose();
-          if (webgl === addon) webgl = null;
+      void import('@xterm/addon-webgl')
+        .then(({ WebglAddon: Addon }) => {
+          if (cancelled) return;
+          const addon = new Addon();
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webgl === addon) webgl = null;
+          });
+          term.loadAddon(addon);
+          webgl = addon;
+        })
+        .catch((cause: unknown) => {
+          console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
         });
-        term.loadAddon(addon);
-        webgl = addon;
-      } catch (cause) {
-        console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
-      }
     });
 
     const encoder = new TextEncoder();
