@@ -16,6 +16,14 @@ import {
 import { isMuted, shouldPush } from '../notify/policy.js';
 import { readGitStatus } from '../git/status.js';
 import { PtySession } from './session.js';
+import {
+  hasTmuxSession,
+  readExitCode,
+  removeExitFile,
+  resolveBackend,
+  tmuxAvailable,
+  type PtyBackend,
+} from './tmux.js';
 import { formatPrompt } from '../../../shared/prompt.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
@@ -104,6 +112,8 @@ export interface SessionManagerOptions {
   push?: (db: Db, payload: PushPayload) => Promise<unknown>;
   /** Overrides AGENTMASTER_PUSH_KINDS; mainly a test seam. */
   pushKinds?: Iterable<NotifyKind>;
+  /** Overrides AGENTMASTER_PTY_BACKEND. */
+  backend?: PtyBackend;
 }
 
 /**
@@ -125,13 +135,14 @@ export class SessionManager {
 
   private readonly map = new Map<string, PtySession>();
   private readonly lastNotified = new Map<string, number>();
-  private readonly onProcessExit = (): void => this.killAll();
-  // Kill sessions but do NOT call process.exit here. This handler is registered
-  // at construction, so exiting synchronously would preempt the HTTP server's
-  // graceful shutdown. Whoever owns the process lifecycle decides when to exit.
+  private readonly onProcessExit = (): void => this.shutdown();
+  // Let go of sessions but do NOT call process.exit here. This handler is
+  // registered at construction, so exiting synchronously would preempt the HTTP
+  // server's graceful shutdown. Whoever owns the process lifecycle decides.
   private readonly onSignal = (): void => {
-    this.killAll();
+    this.shutdown();
   };
+  readonly backend: PtyBackend;
   private processHandlersInstalled = false;
   private readonly pruneTimer: NodeJS.Timeout;
   private disposed = false;
@@ -145,8 +156,11 @@ export class SessionManager {
     this.push = opts.push ?? sendPush;
     this.pushKinds = opts.pushKinds ? new Set(opts.pushKinds) : resolvePushKinds();
 
-    // Any row still open belongs to a process from a previous run: sessions are
-    // killed on server restart, so the record must say so too.
+    this.backend = opts.backend ?? resolveBackend();
+
+    // tmux sessions left by a previous run are picked back up; every other row
+    // still open belonged to a direct PTY that died with that process.
+    this.restoreTmuxSessions();
     this.db.closeOrphanedSessions();
 
     this.pruneTimer = setInterval(() => this.pruneStale(), PRUNE_INTERVAL_MS);
@@ -170,27 +184,73 @@ export class SessionManager {
     const id = nanoid();
     const title = input.title ?? basename(input.cwd) ?? input.cwd;
     // Constructed first: a bad cwd or a failed spawn must not leave a DB row.
-    const session = new PtySession({ id, harness, cwd: input.cwd, title });
+    const session = new PtySession({ id, harness, cwd: input.cwd, title, backend: this.backend });
 
-    this.map.set(id, session);
     this.db.insertSession({
       id,
       harnessId: harness.id,
       cwd: input.cwd,
       title,
       createdAt: session.info.createdAt,
+      backend: this.backend,
+      ...session.size,
     });
-
-    session.on('status', (snapshot: StatusSnapshot) => this.onStatus(session, snapshot));
-    session.on('exit', (code: number | null) => {
-      this.db.markExited(id, code);
-    });
+    this.track(session);
 
     if (input.initialPrompt?.trim()) this.queueInitialPrompt(session, input.initialPrompt);
     this.refreshGit(session);
 
     emitServerEvent({ t: 'session:created', session: session.info });
     return session.info;
+  }
+
+  /** Registers a live session and mirrors its lifecycle onto the database. */
+  private track(session: PtySession): void {
+    const id = session.id;
+    this.map.set(id, session);
+    session.on('status', (snapshot: StatusSnapshot) => this.onStatus(session, snapshot));
+    session.on('exit', (code: number | null) => {
+      this.db.markExited(id, code);
+    });
+    session.on('resize', (cols: number, rows: number) => this.db.updateSessionSize(id, cols, rows));
+  }
+
+  /**
+   * Re-attaches every tmux session a previous server left running. A row whose
+   * agent ended while nobody was watching is closed with its real exit code.
+   */
+  private restoreTmuxSessions(): void {
+    const rows = this.db.listOpenSessions().filter((row) => row.backend === 'tmux');
+    if (rows.length === 0) return;
+    const canAttach = tmuxAvailable();
+    for (const row of rows) {
+      const harness = this.harnessLookup(row.harnessId);
+      if (!canAttach || !harness || !hasTmuxSession(row.id)) {
+        this.db.markExited(row.id, canAttach ? readExitCode(row.id) : null);
+        removeExitFile(row.id);
+        continue;
+      }
+      try {
+        const session = new PtySession({
+          id: row.id,
+          harness,
+          cwd: row.cwd,
+          title: row.title,
+          backend: 'tmux',
+          reattach: { createdAt: row.createdAt },
+          ...(row.cols && row.rows ? { cols: row.cols, rows: row.rows } : {}),
+        });
+        session.info.pinned = row.pinned;
+        session.info.muted = row.muted;
+        this.track(session);
+        this.refreshGit(session);
+      } catch (error) {
+        process.stderr.write(
+          `[tmux] could not re-attach ${row.id}: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        this.db.markExited(row.id, null);
+      }
+    }
   }
 
   private queueInitialPrompt(session: PtySession, prompt: string): void {
@@ -296,7 +356,11 @@ export class SessionManager {
     return session.info;
   }
 
-  /** Kills the session and forgets it entirely. */
+  /**
+   * Deletes a session for good: ends the agent (and its tmux session), and
+   * erases its database row, status history and saved exit code, so it can
+   * never come back after a restart.
+   */
   remove(id: string): void {
     const session = this.map.get(id);
     if (!session) return;
@@ -305,9 +369,34 @@ export class SessionManager {
     if (gitTimer) clearTimeout(gitTimer);
     this.gitTimers.delete(id);
     session.kill();
-    session.dispose();
+    session.destroy();
+    this.db.removeSession(id);
     this.clearNotifyState(id);
     emitServerEvent({ t: 'session:removed', id });
+  }
+
+  /** Deletes every session, running or not. Returns how many. */
+  removeAll(): number {
+    const count = this.map.size;
+    this.killAll();
+    return count;
+  }
+
+  /** Backend in use, and how many agents are running under it. */
+  backendInfo(): { backend: PtyBackend; running: number } {
+    const running = [...this.map.values()].filter((s) => !isTerminalStatus(s.info.status)).length;
+    return { backend: this.backend, running };
+  }
+
+  /**
+   * Server is stopping. tmux sessions are released and keep running for the
+   * next start; direct PTYs cannot outlive us and are ended.
+   */
+  shutdown(): void {
+    for (const [id, session] of [...this.map]) {
+      this.map.delete(id);
+      session.release();
+    }
   }
 
   /** Forgets every stopped session, leaving running ones alone. */
@@ -325,7 +414,7 @@ export class SessionManager {
     if (this.disposed) return;
     this.disposed = true;
     clearInterval(this.pruneTimer);
-    this.killAll();
+    this.shutdown();
     if (this.processHandlersInstalled) {
       process.off('exit', this.onProcessExit);
       process.off('SIGINT', this.onSignal);

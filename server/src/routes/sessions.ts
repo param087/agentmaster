@@ -78,6 +78,16 @@ export function sessionsRouter(manager: SessionManager): Router {
 
   /** Kills the process but keeps the session listed, so its output stays readable. */
   /** Forgets every stopped session at once, leaving running ones alone. */
+  /** Which PTY backend is in use, and how many agents run under it. */
+  router.get('/backend', (_req, res) => {
+    res.json(manager.backendInfo());
+  });
+
+  /** Deletes every session, running or stopped. */
+  router.post('/delete-all', (_req, res) => {
+    res.json({ deleted: manager.removeAll() });
+  });
+
   router.post('/finished/remove', (_req, res) => {
     res.json({ removed: manager.removeFinished() });
   });

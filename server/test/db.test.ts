@@ -33,8 +33,8 @@ describe('migrations', () => {
     return v;
   }
 
-  // Bumped deliberately with each migration. 006 adds settings + sessions.muted.
-  const LATEST_SCHEMA = 6;
+  // Bumped deliberately with each migration. 007 adds sessions.backend/cols/rows.
+  const LATEST_SCHEMA = 7;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
@@ -127,6 +127,9 @@ describe('sessions', () => {
       exitCode: null,
       pinned: false,
       muted: false,
+      backend: 'direct',
+      cols: null,
+      rows: null,
     });
   });
 

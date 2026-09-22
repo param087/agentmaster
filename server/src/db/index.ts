@@ -15,6 +15,9 @@ export interface SessionRow {
   exitCode: number | null;
   pinned: boolean;
   muted: boolean;
+  backend: 'direct' | 'tmux';
+  cols: number | null;
+  rows: number | null;
 }
 
 /** The fields a user may edit on an existing session. */
@@ -59,7 +62,13 @@ export interface PushSubscriptionInput {
 }
 
 export interface Db {
-  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned' | 'muted'>): void;
+  insertSession(
+    row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned' | 'muted' | 'backend' | 'cols' | 'rows'> &
+      Partial<Pick<SessionRow, 'backend' | 'cols' | 'rows'>>,
+  ): void;
+  /** Rows with no exit recorded: what a previous server left running. */
+  listOpenSessions(): SessionRow[];
+  updateSessionSize(id: string, cols: number, rows: number): void;
   updateSessionMeta(id: string, patch: SessionMetaPatch): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
   /**
@@ -122,6 +131,9 @@ interface SessionRecord {
   exit_code: number | null;
   pinned: number;
   muted: number;
+  backend: string;
+  cols: number | null;
+  rows: number | null;
 }
 
 interface EventRecord {
@@ -169,6 +181,9 @@ function toSessionRow(r: SessionRecord): SessionRow {
     exitCode: r.exit_code,
     pinned: r.pinned === 1,
     muted: r.muted === 1,
+    backend: r.backend === 'tmux' ? 'tmux' : 'direct',
+    cols: r.cols,
+    rows: r.rows,
   };
 }
 
@@ -257,14 +272,16 @@ export function openDb(path?: string): Db {
 
   const stmts = {
     insertSession: sqlite.prepare(
-      `INSERT INTO sessions (id, harness_id, cwd, title, created_at, exited_at, exit_code)
-       VALUES (@id, @harnessId, @cwd, @title, @createdAt, NULL, NULL)`,
+      `INSERT INTO sessions (id, harness_id, cwd, title, created_at, exited_at, exit_code, backend, cols, rows)
+       VALUES (@id, @harnessId, @cwd, @title, @createdAt, NULL, NULL, @backend, @cols, @rows)`,
     ),
     markExited: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = ? WHERE id = ?`,
     ),
     updateTitle: sqlite.prepare(`UPDATE sessions SET title = ? WHERE id = ?`),
     updatePinned: sqlite.prepare(`UPDATE sessions SET pinned = ? WHERE id = ?`),
+    listOpen: sqlite.prepare(`SELECT * FROM sessions WHERE exited_at IS NULL ORDER BY created_at ASC`),
+    updateSize: sqlite.prepare(`UPDATE sessions SET cols = ?, rows = ? WHERE id = ?`),
     updateMuted: sqlite.prepare(`UPDATE sessions SET muted = ? WHERE id = ?`),
     getSetting: sqlite.prepare(`SELECT value FROM settings WHERE key = ?`),
     setSetting: sqlite.prepare(
@@ -327,7 +344,7 @@ export function openDb(path?: string): Db {
 
   return {
     insertSession(row) {
-      stmts.insertSession.run(row);
+      stmts.insertSession.run({ backend: 'direct', cols: null, rows: null, ...row });
     },
     markExited(id, exitCode, at = Date.now()) {
       stmts.markExited.run(at, exitCode, id);
@@ -389,6 +406,12 @@ export function openDb(path?: string): Db {
     },
     setHarnessEnabled(harnessId, enabled, at = Date.now()) {
       stmts.setHarnessPref.run(harnessId, enabled ? 1 : 0, at);
+    },
+    listOpenSessions() {
+      return (stmts.listOpen.all() as SessionRecord[]).map(toSessionRow);
+    },
+    updateSessionSize(id, cols, rows) {
+      stmts.updateSize.run(cols, rows, id);
     },
     getSetting<T>(key: string): T | undefined {
       const row = stmts.getSetting.get(key) as { value: string } | undefined;

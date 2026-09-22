@@ -130,7 +130,9 @@ async function main(): Promise<void> {
 
   const { server, close } = createServer({ manager });
   await new Promise<void>((ready) => server.listen(port, HOST, ready));
-  process.stdout.write(`agentmaster listening on http://${HOST}:${port} (${harnessCount} harnesses)\n`);
+  process.stdout.write(
+    `agentmaster listening on http://${HOST}:${port} (${harnessCount} harnesses, ${manager.backend} backend, ${manager.list().length} restored)\n`,
+  );
 
   // Pick up edits to harnesses.yaml without a restart — restarting would kill
   // every running session, which makes tuning a detection rule painful.
@@ -143,9 +145,13 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    process.stdout.write(`\n[shutdown] ${signal}: killing sessions\n`);
+    process.stdout.write(
+      manager.backend === 'tmux'
+        ? `\n[shutdown] ${signal}: agents keep running in tmux; they re-attach on next start\n`
+        : `\n[shutdown] ${signal}: killing sessions\n`,
+    );
     unwatch();
-    manager.killAll();
+    manager.shutdown();
     void close().then(() => process.exit(0));
   };
   // `SessionManager` installs its own SIGINT/SIGTERM handlers that call
