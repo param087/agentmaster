@@ -215,6 +215,20 @@ describe('PATCH /api/sessions/:id', () => {
   });
 });
 
+describe('GET /api/sessions/:id/export.cast', () => {
+  it('downloads a timed asciicast of the output', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await waitFor(() => manager!.get(session.id)!.replay().toString('utf8').includes('hello'));
+    const res = await fetch(`${base}/api/sessions/${session.id}/export.cast`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toMatch(/attachment; filename=".+\.cast"/);
+    const [header, ...events] = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown);
+    expect(header).toMatchObject({ version: 2, width: 120, height: 32 });
+    expect(events.map((e) => (e as [number, string, string])[2]).join('')).toContain('hello');
+  }, PTY_TIMEOUT);
+});
+
 describe('GET /api/sessions/:id/events', () => {
   it('returns the status history, oldest first', async () => {
     const base = await boot();

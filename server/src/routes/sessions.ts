@@ -46,6 +46,12 @@ function firstIssue(error: z.ZodError): string {
   return path ? `${path}: ${issue.message}` : issue.message;
 }
 
+/** A title as a download filename: no quotes, slashes or control characters. */
+export function safeFilename(title: string): string {
+  const cleaned = title.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned.slice(0, 80) || 'session';
+}
+
 export function sessionsRouter(manager: SessionManager): Router {
   const router = Router();
 
@@ -89,6 +95,17 @@ export function sessionsRouter(manager: SessionManager): Router {
     const session = manager.update(id, parsed.data);
     if (!session) return next(httpError(404, `Unknown session "${id}"`));
     res.json({ session });
+  });
+
+  /** Downloads the retained output as an asciinema recording. */
+  router.get('/:id/export.cast', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    const name = safeFilename(session.info.title);
+    res.setHeader('content-type', 'application/x-asciicast');
+    res.setHeader('content-disposition', `attachment; filename="${name}.cast"`);
+    res.send(session.toCast());
   });
 
   /** Status history for the timeline view, oldest first. */

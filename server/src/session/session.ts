@@ -5,6 +5,7 @@ import * as pty from 'node-pty';
 import type { Harness } from '../config/harnesses.js';
 import { isAcknowledgeable, StatusEngine, type StatusSnapshot } from '../status/engine.js';
 import type { Session } from '../status/types.js';
+import { CastRecorder } from './cast-recorder.js';
 import { RingBuffer } from './ring-buffer.js';
 
 const DEFAULT_COLS = 120;
@@ -97,6 +98,7 @@ export class PtySession extends EventEmitter {
   private readonly harness: Harness;
   private pty: pty.IPty;
   private readonly ringBuffer: RingBuffer;
+  private readonly cast: CastRecorder;
   private engine: StatusEngine;
   private readonly cwd: string;
   private cols: number;
@@ -134,6 +136,7 @@ export class PtySession extends EventEmitter {
     this.cols = cols;
     this.rows = rows;
     this.ringBuffer = new RingBuffer(opts.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES);
+    this.cast = new CastRecorder(opts.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES, cols, rows);
     this.engine = new StatusEngine(opts.harness, { cols, rows });
     this.pty = this.spawn();
 
@@ -202,6 +205,7 @@ export class PtySession extends EventEmitter {
     this.clearKillTimer();
     this.engine.dispose();
     this.ringBuffer.clear();
+    this.cast.clear();
 
     this.exited = false;
     this.killedByUser = false;
@@ -239,6 +243,11 @@ export class PtySession extends EventEmitter {
   /** Bytes waiting to be replayed to a newly attached browser. */
   replay(): Buffer {
     return this.ringBuffer.read();
+  }
+
+  /** The retained output as an asciicast v2 recording. */
+  toCast(): string {
+    return this.cast.toCast(this.info.title);
   }
 
   write(data: string | Buffer): void {
@@ -306,6 +315,7 @@ export class PtySession extends EventEmitter {
     }
     this.cols = cols;
     this.rows = rows;
+    this.cast.resize(cols, rows);
 
     // Everything in the ring buffer was drawn for the *old* width. Replaying it
     // into a terminal of the new size overlays two differently-wrapped renders
@@ -387,6 +397,7 @@ export class PtySession extends EventEmitter {
     const bytes = Buffer.from(chunk, 'utf8');
     this.broadcast(bytes);
     this.ringBuffer.push(bytes);
+    this.cast.output(chunk);
     // Never `ringBuffer.read()` here: it copies up to 2 MB per chunk.
     void this.engine.onData(bytes);
   }

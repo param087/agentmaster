@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 /**
  * The PTY is fixed at 120x32 server-side so two browsers viewing the same
@@ -87,6 +88,10 @@ export interface UseTerminalResult {
   scrollToBottom: () => void;
   /** False while the user is looking at scrollback. Always true on the alt screen. */
   atBottom: boolean;
+  /** Plain text of scrollback + screen, trailing whitespace trimmed per line. */
+  exportText: () => string;
+  /** The same, as a standalone coloured HTML document. */
+  exportHtml: () => string;
   /** Whether the program in the PTY has enabled bracketed paste (DECSET 2004). */
   bracketedPaste: () => boolean;
   /** Finds `query` in the scrollback; returns false when there is no match. */
@@ -226,6 +231,7 @@ export function useTerminal(
   const socketRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const inputTransformRef = useRef<((data: string) => string) | null>(null);
   const [connected, setConnected] = useState(false);
@@ -271,6 +277,10 @@ export function useTerminal(
     term.open(container);
     termRef.current = term;
     const unexpose = exposeForTests(term, sessionId);
+
+    const serializeAddon = new SerializeAddon();
+    term.loadAddon(serializeAddon);
+    serializeRef.current = serializeAddon;
 
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
@@ -458,6 +468,7 @@ export function useTerminal(
       unexpose();
       searchListener.dispose();
       searchRef.current = null;
+      serializeRef.current = null;
       termRef.current = null;
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session
       // switches would exhaust the browser's context pool.
@@ -525,6 +536,28 @@ export function useTerminal(
     [],
   );
 
+  const exportText = useCallback((): string => {
+    const term = termRef.current;
+    if (!term) return '';
+    const buffer = term.buffer.normal;
+    const lines: string[] = [];
+    for (let i = 0; i < buffer.length; i += 1) {
+      const line = buffer.getLine(i);
+      if (!line) continue;
+      // Wrapped rows continue the previous logical line rather than start one.
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return `${lines.join('\n')}\n`;
+  }, []);
+
+  const exportHtml = useCallback(
+    (): string => serializeRef.current?.serializeAsHTML({ includeGlobalBackground: true }) ?? '',
+    [],
+  );
+
   const bracketedPaste = useCallback(
     (): boolean => termRef.current?.modes.bracketedPasteMode ?? false,
     [],
@@ -537,6 +570,8 @@ export function useTerminal(
   }, []);
 
   return {
+    exportText,
+    exportHtml,
     bracketedPaste,
     search,
     clearSearch,

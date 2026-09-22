@@ -99,6 +99,8 @@ export interface TerminalViewProps {
    * split layout every other pane stays passive.
    */
   active?: boolean;
+  /** Receives text/HTML exporters for the terminal buffer. */
+  onExportReady?: (exporter: { text: () => string; html: () => string } | null) => void;
   /** Receives a prompt sender that honours the program's bracketed-paste mode. */
   onSendPromptReady?: (send: ((text: string) => void) | null) => void;
 }
@@ -110,6 +112,7 @@ export function TerminalView({
   onInputTransformReady,
   onFitPlanReady,
   onSendPromptReady,
+  onExportReady,
   active = true,
 }: TerminalViewProps) {
   const {
@@ -125,7 +128,15 @@ export function TerminalView({
     clearSearch,
     searchResults,
     bracketedPaste,
+    exportText,
+    exportHtml,
   } = useTerminal(sessionId, dims);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    onExportReady?.({ text: exportText, html: exportHtml });
+    return () => onExportReady?.(null);
+  }, [sessionId, exportText, exportHtml, onExportReady]);
 
   useEffect(() => {
     if (!connected) {

@@ -44,6 +44,7 @@ import { formatPrompt } from '../lib/prompt';
 import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
 import { EditableTitle } from './editable-title';
+import { ExportMenu, type TerminalExport } from './export-menu';
 import { TimelinePanel } from './timeline-panel';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
@@ -135,6 +136,8 @@ export function AppShell({
     [],
   );
 
+  const [exporter, setExporter] = useState<TerminalExport | null>(null);
+  const handleExportReady = useCallback((next: TerminalExport | null) => setExporter(next), []);
   const [sendPrompt, setSendPrompt] = useState<((text: string) => void) | null>(null);
   const handleSendPromptReady = useCallback((send: ((text: string) => void) | null) => {
     setSendPrompt(() => send);
@@ -448,6 +451,15 @@ export function AppShell({
     </button>
   );
 
+  const exportMenu = selected && (
+    <ExportMenu
+      session={selected}
+      exporter={exporter}
+      buttonClassName={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+      labelClassName={secondaryLabel}
+    />
+  );
+
   const muteButton = selected && (
     <button
       type="button"
@@ -659,6 +671,7 @@ export function AppShell({
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
                         {timelineButton}
+                        {exportMenu}
                         {muteButton}
                         {pinButton}
                         {fitButton}
@@ -691,6 +704,7 @@ export function AppShell({
                     })}
                   </div>
                   {timelineButton}
+                  {exportMenu}
                   {muteButton}
                   {pinButton}
                   {fitButton}
@@ -734,6 +748,7 @@ export function AppShell({
                   onInputTransformReady={focused ? handleInputTransformReady : undefined}
                   onFitPlanReady={focused ? handleFitPlanReady : undefined}
                   onSendPromptReady={focused ? handleSendPromptReady : undefined}
+                  onExportReady={focused ? handleExportReady : undefined}
                 />
               );
               if (layout === 1) return <div key={index} className="min-h-0">{terminal}</div>;
