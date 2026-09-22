@@ -177,6 +177,202 @@ describe('POST /api/sessions', () => {
   });
 });
 
+describe('PATCH /api/sessions/:id', () => {
+  const patch = (base: string, id: string, body: unknown) =>
+    fetch(`${base}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('renames and pins, persisting both to the database', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+
+    const renamed = await patch(base, session.id, { title: '  Refactor auth  ' });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { session: Session }).session.title).toBe('Refactor auth');
+
+    const pinned = await patch(base, session.id, { pinned: true });
+    expect(((await pinned.json()) as { session: Session }).session.pinned).toBe(true);
+
+    expect(db!.getSession(session.id)).toMatchObject({ title: 'Refactor auth', pinned: true });
+    const list = (await (await fetch(`${base}/api/sessions`)).json()) as { sessions: Session[] };
+    expect(list.sessions[0]).toMatchObject({ title: 'Refactor auth', pinned: true });
+  }, PTY_TIMEOUT);
+
+  it('rejects empty titles, unknown fields and empty bodies as 400', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    expect((await patch(base, session.id, { title: '   ' })).status).toBe(400);
+    expect((await patch(base, session.id, { cwd: '/' })).status).toBe(400);
+    expect((await patch(base, session.id, {})).status).toBe(400);
+  }, PTY_TIMEOUT);
+
+  it('returns 404 for an unknown id', async () => {
+    const base = await boot();
+    expect((await patch(base, 'nope', { pinned: true })).status).toBe(404);
+  });
+});
+
+describe('GET /api/sessions/:id/export.cast', () => {
+  it('downloads a timed asciicast of the output', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await waitFor(() => manager!.get(session.id)!.replay().toString('utf8').includes('hello'));
+    const res = await fetch(`${base}/api/sessions/${session.id}/export.cast`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toMatch(/attachment; filename=".+\.cast"/);
+    const [header, ...events] = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown);
+    expect(header).toMatchObject({ version: 2, width: 120, height: 32 });
+    expect(events.map((e) => (e as [number, string, string])[2]).join('')).toContain('hello');
+  }, PTY_TIMEOUT);
+});
+
+describe('git routes', () => {
+  it('lists changes, diffs a changed file, and refuses paths not in the status', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'am-api-git-'));
+    try {
+      const { execFileSync } = await import('node:child_process');
+      const { writeFileSync } = await import('node:fs');
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+      const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, env });
+      run('init', '-q', '-b', 'feat');
+      writeFileSync(join(dir, 'a.txt'), 'old\n');
+      run('add', '.');
+      run('commit', '-qm', 'init');
+      writeFileSync(join(dir, 'a.txt'), 'new\n');
+
+      const base = await boot();
+      const session = await createSession(base, dir);
+
+      const status = (await (await fetch(`${base}/api/sessions/${session.id}/git`)).json()) as {
+        repo: boolean;
+        branch: string;
+        files: Array<{ path: string }>;
+      };
+      expect(status).toMatchObject({ repo: true, branch: 'feat', files: [{ path: 'a.txt', code: ' M' }] });
+
+      const diff = (await (await fetch(`${base}/api/sessions/${session.id}/git/diff?path=a.txt`)).json()) as { diff: string };
+      expect(diff.diff).toContain('+new');
+
+      const outside = await fetch(`${base}/api/sessions/${session.id}/git/diff?path=${encodeURIComponent('../../etc/passwd')}`);
+      expect(outside.status).toBe(404);
+
+      await waitFor(() => manager!.get(session.id)!.info.git?.dirty === 1);
+      expect(manager!.get(session.id)!.info.git).toMatchObject({ branch: 'feat', dirty: 1 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, PTY_TIMEOUT);
+
+  it('reports repo: false outside a repository', async () => {
+    const base = await boot();
+    const session = await createSession(base, tmpdir());
+    const status = (await (await fetch(`${base}/api/sessions/${session.id}/git`)).json()) as { repo: boolean };
+    expect(status.repo).toBe(false);
+  }, PTY_TIMEOUT);
+});
+
+describe('GET /api/sessions/:id/events', () => {
+  it('returns the status history, oldest first', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await waitFor(() => manager!.get(session.id)!.info.status !== 'starting');
+    const res = await fetch(`${base}/api/sessions/${session.id}/events`);
+    expect(res.status).toBe(200);
+    const { events } = (await res.json()) as { events: Array<{ status: string; at: number }> };
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]!.status).toBe('busy');
+    expect((await fetch(`${base}/api/sessions/nope/events`)).status).toBe(404);
+  }, PTY_TIMEOUT);
+});
+
+describe('/api/notify-prefs', () => {
+  const put = (base: string, body: unknown) =>
+    fetch(`${base}/api/notify-prefs`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('round-trips rules and rejects malformed times', async () => {
+    const base = await boot();
+    const prefs = { pushKinds: ['waiting', 'waiting'], quietHours: { start: '22:00', end: '07:30' }, mutedHarnesses: ['aider'] };
+    const res = await put(base, prefs);
+    expect(res.status).toBe(200);
+    const saved = (await (await fetch(`${base}/api/notify-prefs`)).json()) as { prefs: unknown };
+    expect(saved.prefs).toEqual({ ...prefs, pushKinds: ['waiting'] });
+
+    expect((await put(base, { ...prefs, quietHours: { start: '25:00', end: '07:00' } })).status).toBe(400);
+    expect((await put(base, { ...prefs, pushKinds: ['nope'] })).status).toBe(400);
+  });
+});
+
+describe('/api/settings', () => {
+  it('saves the prune setting and prunes stopped sessions immediately', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await fetch(`${base}/api/sessions/${session.id}`, { method: 'DELETE' });
+    await waitFor(() => manager!.get(session.id)!.info.status === 'killed');
+    await sleep(50);
+    const res = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pruneAfterHours: 0.00001 }),
+    });
+    expect(res.status).toBe(200);
+    expect(manager!.get(session.id)).toBeUndefined();
+  }, PTY_TIMEOUT);
+});
+
+describe('/api/presets', () => {
+  const post = (base: string, path: string, body?: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it('saves, lists alphabetically, and deletes presets', async () => {
+    const base = await boot();
+    expect((await post(base, '/api/presets', { name: 'zeta', harnessId: 'test-bash', cwd: '/tmp' })).status).toBe(201);
+    expect((await post(base, '/api/presets', { name: 'Alpha', harnessId: 'test-bash', cwd: '/tmp', prompt: '  ' })).status).toBe(201);
+
+    const { presets } = (await (await fetch(`${base}/api/presets`)).json()) as {
+      presets: Array<{ id: string; name: string; prompt: string | null }>;
+    };
+    expect(presets.map((p) => p.name)).toEqual(['Alpha', 'zeta']);
+    expect(presets[0]!.prompt).toBeNull();
+
+    expect((await fetch(`${base}/api/presets/${presets[0]!.id}`, { method: 'DELETE' })).status).toBe(204);
+    expect((await fetch(`${base}/api/presets/${presets[0]!.id}`, { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('rejects a preset without a name', async () => {
+    const base = await boot();
+    expect((await post(base, '/api/presets', { name: '', harnessId: 'x', cwd: '/tmp' })).status).toBe(400);
+  });
+
+  it('launches a session titled after the preset and types its prompt once ready', async () => {
+    const base = await boot(bashHarness({ args: ['--norc', '--noprofile', '-i'], idleMs: 200 }));
+    const created = await post(base, '/api/presets', {
+      name: 'Greeter',
+      harnessId: 'test-bash',
+      cwd: '/tmp',
+      prompt: 'echo preset-$((20+22))',
+    });
+    const { preset } = (await created.json()) as { preset: { id: string } };
+
+    const launched = await post(base, `/api/presets/${preset.id}/launch`);
+    expect(launched.status).toBe(201);
+    const { session } = (await launched.json()) as { session: Session };
+    expect(session.title).toBe('Greeter');
+
+    await waitFor(() => manager!.get(session.id)!.replay().toString('utf8').includes('preset-42'), 8000);
+  }, PTY_TIMEOUT);
+});
+
 describe('DELETE /api/sessions/:id', () => {
   it('returns 404 for an unknown id', async () => {
     const base = await boot();

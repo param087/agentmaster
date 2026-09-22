@@ -14,13 +14,15 @@
     "dev:web": "npm run dev --workspace=web",
     "build": "npm run build --workspace=web",
     "start": "npm run start --workspace=server",
-    "test": "npm run test --workspace=server",
+    "test": "npm run test --workspace=server && npm run test --workspace=web",
     "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=web",
     "icons:sync": "node scripts/sync-harness-icons.mjs",
     "mobile": "npm run build && node scripts/mobile.mjs",
-    "tunnel:off": "tailscale serve --https=8443 off"
+    "tunnel:off": "tailscale serve --https=8443 off",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "concurrently": "^9.1.2"
   },
   "allowScripts": {
@@ -29,5 +31,8 @@
     "esbuild@0.21.5": true,
     "esbuild@0.25.12": true,
     "better-sqlite3@13.0.3": true
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

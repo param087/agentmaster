@@ -9,6 +9,11 @@ export interface PushPayload {
   kind: 'waiting' | 'done' | 'exited' | 'killed' | 'error';
   title: string;
   body: string;
+  /**
+   * Buttons shown on the notification. Tapping one types `keys` into the
+   * session without opening the app. Browsers show at most two.
+   */
+  actions?: { label: string; keys: string }[];
 }
 
 export interface PushResult {

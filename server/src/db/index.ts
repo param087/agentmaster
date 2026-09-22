@@ -13,6 +13,18 @@ export interface SessionRow {
   createdAt: number;
   exitedAt: number | null;
   exitCode: number | null;
+  pinned: boolean;
+  muted: boolean;
+  backend: 'direct' | 'tmux';
+  cols: number | null;
+  rows: number | null;
+}
+
+/** The fields a user may edit on an existing session. */
+export interface SessionMetaPatch {
+  title?: string;
+  pinned?: boolean;
+  muted?: boolean;
 }
 
 export interface EventRow {
@@ -21,6 +33,15 @@ export interface EventRow {
   at: number;
   status: SessionStatus;
   waitKind: WaitKind | null;
+}
+
+export interface PresetRow {
+  id: string;
+  name: string;
+  harnessId: string;
+  cwd: string;
+  prompt: string | null;
+  createdAt: number;
 }
 
 export interface PushSubscriptionRow {
@@ -41,7 +62,14 @@ export interface PushSubscriptionInput {
 }
 
 export interface Db {
-  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode'>): void;
+  insertSession(
+    row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned' | 'muted' | 'backend' | 'cols' | 'rows'> &
+      Partial<Pick<SessionRow, 'backend' | 'cols' | 'rows'>>,
+  ): void;
+  /** Rows with no exit recorded: what a previous server left running. */
+  listOpenSessions(): SessionRow[];
+  updateSessionSize(id: string, cols: number, rows: number): void;
+  updateSessionMeta(id: string, patch: SessionMetaPatch): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
   /**
    * Marks a restarted session as running again, keeping its original
@@ -76,6 +104,15 @@ export interface Db {
   getHarnessPrefs(): Map<string, boolean>;
   setHarnessEnabled(harnessId: string, enabled: boolean, at?: number): void;
 
+  /** JSON-valued preference, or `undefined` when never set or unparseable. */
+  getSetting<T>(key: string): T | undefined;
+  setSetting(key: string, value: unknown, at?: number): void;
+
+  insertPreset(row: PresetRow): void;
+  listPresets(): PresetRow[];
+  getPreset(id: string): PresetRow | undefined;
+  deletePreset(id: string): boolean;
+
   close(): void;
 }
 
@@ -92,6 +129,11 @@ interface SessionRecord {
   created_at: number;
   exited_at: number | null;
   exit_code: number | null;
+  pinned: number;
+  muted: number;
+  backend: string;
+  cols: number | null;
+  rows: number | null;
 }
 
 interface EventRecord {
@@ -125,7 +167,7 @@ function toPushSubscriptionRow(r: PushSubscriptionRecord): PushSubscriptionRow {
 }
 
 function defaultDbPath(): string {
-  return join(homedir(), '.agentmaster', 'db.sqlite');
+  return process.env['AGENTMASTER_DB'] ?? join(homedir(), '.agentmaster', 'db.sqlite');
 }
 
 function toSessionRow(r: SessionRecord): SessionRow {
@@ -137,6 +179,11 @@ function toSessionRow(r: SessionRecord): SessionRow {
     createdAt: r.created_at,
     exitedAt: r.exited_at,
     exitCode: r.exit_code,
+    pinned: r.pinned === 1,
+    muted: r.muted === 1,
+    backend: r.backend === 'tmux' ? 'tmux' : 'direct',
+    cols: r.cols,
+    rows: r.rows,
   };
 }
 
@@ -146,6 +193,26 @@ function toEventRow(r: EventRecord): EventRow {  return {
     at: r.at,
     status: r.status as SessionStatus,
     waitKind: (r.wait_kind as WaitKind | null) ?? null,
+  };
+}
+
+interface PresetRecord {
+  id: string;
+  name: string;
+  harness_id: string;
+  cwd: string;
+  prompt: string | null;
+  created_at: number;
+}
+
+function toPresetRow(r: PresetRecord): PresetRow {
+  return {
+    id: r.id,
+    name: r.name,
+    harnessId: r.harness_id,
+    cwd: r.cwd,
+    prompt: r.prompt,
+    createdAt: r.created_at,
   };
 }
 
@@ -205,11 +272,21 @@ export function openDb(path?: string): Db {
 
   const stmts = {
     insertSession: sqlite.prepare(
-      `INSERT INTO sessions (id, harness_id, cwd, title, created_at, exited_at, exit_code)
-       VALUES (@id, @harnessId, @cwd, @title, @createdAt, NULL, NULL)`,
+      `INSERT INTO sessions (id, harness_id, cwd, title, created_at, exited_at, exit_code, backend, cols, rows)
+       VALUES (@id, @harnessId, @cwd, @title, @createdAt, NULL, NULL, @backend, @cols, @rows)`,
     ),
     markExited: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = ? WHERE id = ?`,
+    ),
+    updateTitle: sqlite.prepare(`UPDATE sessions SET title = ? WHERE id = ?`),
+    updatePinned: sqlite.prepare(`UPDATE sessions SET pinned = ? WHERE id = ?`),
+    listOpen: sqlite.prepare(`SELECT * FROM sessions WHERE exited_at IS NULL ORDER BY created_at ASC`),
+    updateSize: sqlite.prepare(`UPDATE sessions SET cols = ?, rows = ? WHERE id = ?`),
+    updateMuted: sqlite.prepare(`UPDATE sessions SET muted = ? WHERE id = ?`),
+    getSetting: sqlite.prepare(`SELECT value FROM settings WHERE key = ?`),
+    setSetting: sqlite.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     ),
     reopenSession: sqlite.prepare(
       `UPDATE sessions SET exited_at = NULL, exit_code = NULL WHERE id = ?`,
@@ -222,7 +299,11 @@ export function openDb(path?: string): Db {
       `SELECT * FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     ),
     listEvents: sqlite.prepare(
-      `SELECT * FROM events WHERE session_id = ? ORDER BY at ASC, id ASC LIMIT ?`,
+      // The *latest* N, returned oldest-first: a long-lived session must show
+      // what happened recently, not its first 500 transitions.
+      `SELECT * FROM (
+         SELECT * FROM events WHERE session_id = ? ORDER BY at DESC, id DESC LIMIT ?
+       ) ORDER BY at ASC, id ASC`,
     ),
     closeOrphaned: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = NULL WHERE exited_at IS NULL`,
@@ -249,6 +330,13 @@ export function openDb(path?: string): Db {
       `INSERT INTO harness_prefs (harness_id, enabled, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(harness_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
     ),
+    insertPreset: sqlite.prepare(
+      `INSERT INTO presets (id, name, harness_id, cwd, prompt, created_at)
+       VALUES (@id, @name, @harnessId, @cwd, @prompt, @createdAt)`,
+    ),
+    listPresets: sqlite.prepare(`SELECT * FROM presets ORDER BY name COLLATE NOCASE ASC`),
+    getPreset: sqlite.prepare(`SELECT * FROM presets WHERE id = ?`),
+    deletePreset: sqlite.prepare(`DELETE FROM presets WHERE id = ?`),
     pushFail: sqlite.prepare(
       `UPDATE push_subscriptions SET failures = failures + 1 WHERE endpoint = ?`,
     ),
@@ -256,10 +344,18 @@ export function openDb(path?: string): Db {
 
   return {
     insertSession(row) {
-      stmts.insertSession.run(row);
+      stmts.insertSession.run({ backend: 'direct', cols: null, rows: null, ...row });
     },
     markExited(id, exitCode, at = Date.now()) {
       stmts.markExited.run(at, exitCode, id);
+    },
+    updateSessionMeta(id, patch) {
+      const apply = sqlite.transaction(() => {
+        if (patch.title !== undefined) stmts.updateTitle.run(patch.title, id);
+        if (patch.pinned !== undefined) stmts.updatePinned.run(patch.pinned ? 1 : 0, id);
+        if (patch.muted !== undefined) stmts.updateMuted.run(patch.muted ? 1 : 0, id);
+      });
+      apply();
     },
     reopenSession(id) {
       stmts.reopenSession.run(id);
@@ -310,6 +406,37 @@ export function openDb(path?: string): Db {
     },
     setHarnessEnabled(harnessId, enabled, at = Date.now()) {
       stmts.setHarnessPref.run(harnessId, enabled ? 1 : 0, at);
+    },
+    listOpenSessions() {
+      return (stmts.listOpen.all() as SessionRecord[]).map(toSessionRow);
+    },
+    updateSessionSize(id, cols, rows) {
+      stmts.updateSize.run(cols, rows, id);
+    },
+    getSetting<T>(key: string): T | undefined {
+      const row = stmts.getSetting.get(key) as { value: string } | undefined;
+      if (!row) return undefined;
+      try {
+        return JSON.parse(row.value) as T;
+      } catch {
+        return undefined;
+      }
+    },
+    setSetting(key, value, at = Date.now()) {
+      stmts.setSetting.run(key, JSON.stringify(value), at);
+    },
+    insertPreset(row) {
+      stmts.insertPreset.run(row);
+    },
+    listPresets() {
+      return (stmts.listPresets.all() as PresetRecord[]).map(toPresetRow);
+    },
+    getPreset(id) {
+      const record = stmts.getPreset.get(id) as PresetRecord | undefined;
+      return record ? toPresetRow(record) : undefined;
+    },
+    deletePreset(id) {
+      return stmts.deletePreset.run(id).changes > 0;
     },
     close() {
       sqlite.close();

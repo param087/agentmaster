@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   BellOff,
+  Columns2,
+  Grid2x2,
+  Square,
   Maximize2,
   Menu,
   MoreVertical,
+  GitBranch,
+  History,
+  Pin,
+  PinOff,
   RotateCcw,
   Skull,
   Trash2,
@@ -13,20 +21,43 @@ import {
 import type { Session } from '../lib/types';
 import { api, ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
+import { isAppShortcut, shortcutDigit } from '../lib/keys';
+import { orderSessions } from '../lib/session-order';
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
 import { TERM_COLS, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal';
+import {
+  focusPane,
+  initialPanes,
+  PANE_LAYOUTS,
+  pruneMissing,
+  setLayout,
+  showSession,
+  type PaneLayout,
+  type PaneState,
+} from '../lib/panes';
 import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
-import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
+import { PromptComposer } from './prompt-composer';
+import { formatPrompt } from '../lib/prompt';
 import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
-import { SettingsDialog } from './settings-dialog';
+import { EditableTitle } from './editable-title';
+import { ExportMenu, type TerminalExport } from './export-menu';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
 import { TerminalView } from './terminal-view';
+
+// Dialogs and side panels load on first open: none of them are needed to show
+// a terminal, which is what a cold start on a phone is waiting for.
+const NewSessionDialog = lazy(() =>
+  import('./new-session-dialog').then((m) => ({ default: m.NewSessionDialog })),
+);
+const SettingsDialog = lazy(() => import('./settings-dialog').then((m) => ({ default: m.SettingsDialog })));
+const TimelinePanel = lazy(() => import('./timeline-panel').then((m) => ({ default: m.TimelinePanel })));
+const GitPanel = lazy(() => import('./git-panel').then((m) => ({ default: m.GitPanel })));
 
 const CLOCK_TICK_MS = 1000;
 
@@ -44,18 +75,26 @@ function useClock(): number {
   return now;
 }
 
-/**
- * ⌘ on Apple platforms, Ctrl+Shift elsewhere.
- *
- * Plain Ctrl-K and Ctrl-N are readline bindings (kill-to-end-of-line, next-line)
- * that every harness TUI expects to receive, so on non-Apple platforms the app
- * must not swallow them. ⌘ is safe because terminals never claim it.
- */
-function isPrimaryModifier(event: KeyboardEvent): boolean {
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  if (mac) return event.metaKey && !event.ctrlKey;
-  return event.ctrlKey && event.shiftKey && !event.metaKey;
+const LAYOUT_KEY = 'agentmaster.paneLayout';
+
+function readStoredLayout(): PaneLayout {
+  try {
+    const value = Number(window.localStorage.getItem(LAYOUT_KEY));
+    return (PANE_LAYOUTS as readonly number[]).includes(value) ? (value as PaneLayout) : 1;
+  } catch {
+    return 1;
+  }
 }
+
+function storeLayout(layout: PaneLayout): void {
+  try {
+    window.localStorage.setItem(LAYOUT_KEY, String(layout));
+  } catch {
+    // Private mode: the layout just won't persist.
+  }
+}
+
+const LAYOUT_ICON: Record<PaneLayout, typeof Square> = { 1: Square, 2: Columns2, 4: Grid2x2 };
 
 const HEADER_BUTTON =
   'inline-flex items-center gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1 ' +
@@ -105,6 +144,19 @@ export function AppShell({
     [],
   );
 
+  const [exporter, setExporter] = useState<TerminalExport | null>(null);
+  const handleExportReady = useCallback((next: TerminalExport | null) => setExporter(next), []);
+  const [sendPrompt, setSendPrompt] = useState<((text: string) => void) | null>(null);
+  const handleSendPromptReady = useCallback((send: ((text: string) => void) | null) => {
+    setSendPrompt(() => send);
+  }, []);
+  // Other sessions' terminal modes are unknown here; every agent CLI we ship
+  // enables bracketed paste, so multi-line broadcasts assume it.
+  const sendToOther = useCallback(
+    (id: string, text: string) => api.sendInput(id, formatPrompt(text, true)),
+    [],
+  );
+
   // A ref, not state: the plan must be *measured at click time*, after any
   // rotation or soft-keyboard show/hide, and storing it in state would only
   // cause renders nobody needs.
@@ -118,10 +170,45 @@ export function AppShell({
    * server's fixed 120x32. Per session, and dropped on switch: it is a
    * deliberate, confirmed action, never something inherited by accident.
    */
-  const [ptyDims, setPtyDims] = useState<TerminalDims | null>(null);
-  useEffect(() => setPtyDims(null), [selectedId]);
+  // Keyed by session: with several panes open, focusing another pane must not
+  // silently reconnect (and so un-resize) the one you just fitted.
+  const [ptyDimsFor, setPtyDimsFor] = useState<{ sessionId: string; dims: TerminalDims } | null>(null);
+  const ptyDims = ptyDimsFor !== null && ptyDimsFor.sessionId === selectedId ? ptyDimsFor.dims : null;
+  const setPtyDims = useCallback(
+    (dims: TerminalDims | null): void => {
+      setPtyDimsFor(dims !== null && selectedId !== null ? { sessionId: selectedId, dims } : null);
+    },
+    [selectedId],
+  );
+
+  // ---- split panes (desktop only) ----------------------------------------
+  const [paneState, setPaneState] = useState<PaneState>(() =>
+    initialPanes(readStoredLayout(), selectedId),
+  );
+  useEffect(() => {
+    if (selectedId !== null) setPaneState((state) => showSession(state, selectedId));
+  }, [selectedId]);
+  useEffect(() => {
+    setPaneState((state) => pruneMissing(state, new Set(sessions.map((s) => s.id))));
+  }, [sessions]);
+  const changeLayout = (layout: PaneLayout): void => {
+    storeLayout(layout);
+    setPaneState((state) => setLayout(state, layout));
+  };
+  const focusPaneAt = (index: number): void => {
+    setPaneState((state) => focusPane(state, index));
+    const id = paneState.panes[index];
+    if (id) onSelect(id);
+  };
+  const layout: PaneLayout = narrow ? 1 : paneState.layout;
+  const visiblePanes: (string | null)[] = narrow ? [selectedId] : paneState.panes;
+  const focusedPane = narrow ? 0 : paneState.focused;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** At most one side panel at a time; they share the same slot. */
+  const [panel, setPanel] = useState<'timeline' | 'git' | null>(null);
+  const timelineOpen = panel === 'timeline';
+
   /**
    * The one pending confirmation, or null. A single slot rather than a flag per
    * action: only one dialog can ever be up, and this keeps the wiring honest.
@@ -138,6 +225,7 @@ export function AppShell({
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
 
   const waiting = useMemo(() => attentionOrder(sessions), [sessions]);
+  const sidebarOrder = useMemo(() => orderSessions(sessions), [sessions]);
 
   /** Cycles through the attention queue in the same order the sidebar shows. */
   const cycleAttention = useCallback((): void => {
@@ -152,19 +240,33 @@ export function AppShell({
   // every bare key, Ctrl-C and ⇧Tab — reaches the PTY verbatim.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!isPrimaryModifier(event) || event.altKey || event.shiftKey) return;
+      if (!isAppShortcut(event)) return;
       const key = event.key.toLowerCase();
+      const digit = shortcutDigit(event);
       if (key === 'n') {
         event.preventDefault();
         setNewOpen(true);
       } else if (key === 'k') {
         event.preventDefault();
         cycleAttention();
+      } else if (digit !== null) {
+        // ⌘1…⌘9: the Nth session in sidebar order.
+        const target = sidebarOrder[digit - 1];
+        if (!target) return;
+        event.preventDefault();
+        onSelect(target.id);
+      } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        if (sidebarOrder.length === 0) return;
+        event.preventDefault();
+        const index = sidebarOrder.findIndex((s) => s.id === selectedId);
+        const step = event.key === 'ArrowUp' ? -1 : 1;
+        const next = sidebarOrder[(index + step + sidebarOrder.length) % sidebarOrder.length];
+        if (next) onSelect(next.id);
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [cycleAttention]);
+  }, [cycleAttention, sidebarOrder, selectedId, onSelect]);
 
   // Escape closes whichever transient surface is open. Registered on `keyup` in
   // the bubble phase so it cannot swallow the Escape the terminal needs — the
@@ -210,9 +312,11 @@ export function AppShell({
     // destroys something unrecoverable.
     setMenuOpen(false);
     setConfirm({
-      title: isTerminalStatus(session.status) ? 'Delete session?' : 'Remove session?',
-      body: `"${session.title}" and its output will be discarded. This cannot be undone.`,
-      confirmLabel: isTerminalStatus(session.status) ? 'Delete' : 'Remove',
+      title: 'Delete session?',
+      body: isTerminalStatus(session.status)
+        ? `"${session.title}", its output and its history will be deleted. This cannot be undone.`
+        : `"${session.title}" is still running. Deleting stops the agent and erases its output and history, even across restarts. This cannot be undone.`,
+      confirmLabel: 'Delete',
       destructive: true,
       onConfirm: () => runAction(api.removeSession(session.id)),
     });
@@ -343,13 +447,99 @@ export function AppShell({
       }}
       title={
         isTerminalStatus(selected.status)
-          ? 'Forget this session and its output'
-          : 'Kill and forget this session'
+          ? 'Delete this session, its output and history'
+          : 'Stop the agent and delete this session for good'
       }
+      aria-label="Delete"
       className={cn(HEADER_BUTTON, 'hover:border-status-error/50 hover:text-status-error')}
     >
       <Trash2 className="size-3.5" />
-      {isTerminalStatus(selected.status) ? 'Delete' : 'Remove'}
+      Delete
+    </button>
+  );
+
+  // Secondary header labels collapse to icons on mid-width desktops, where six
+  // labelled buttons would push the session title off screen. The phone menu
+  // always shows them: it has the room, and icons alone are ambiguous there.
+  const secondaryLabel = narrow ? '' : 'hidden xl:inline';
+
+  const timelineButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        setPanel((current) => (current === 'timeline' ? null : 'timeline'));
+      }}
+      aria-pressed={timelineOpen}
+      aria-label="Timeline"
+      title="Where this session's time went"
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      <History className="size-3.5" />
+      <span className={secondaryLabel}>Timeline</span>
+    </button>
+  );
+
+  const gitButton = selected?.git && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        setPanel((current) => (current === 'git' ? null : 'git'));
+      }}
+      aria-pressed={panel === 'git'}
+      aria-label="Changes"
+      title={`${selected.git.branch ?? 'detached'} · ${selected.git.dirty} changed`}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      <GitBranch className="size-3.5" />
+      <span className={secondaryLabel}>Changes</span>
+      {selected.git.dirty > 0 && (
+        <span className="rounded bg-status-waiting/20 px-1 tabular-nums text-status-waiting">{selected.git.dirty}</span>
+      )}
+    </button>
+  );
+
+  const exportMenu = selected && (
+    <ExportMenu
+      session={selected}
+      exporter={exporter}
+      buttonClassName={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+      labelClassName={secondaryLabel}
+    />
+  );
+
+  const muteButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        runAction(api.updateSession(selected.id, { muted: !selected.muted }).then(() => undefined));
+      }}
+      aria-pressed={selected.muted === true}
+      aria-label={selected.muted ? 'Unmute' : 'Mute'}
+      title={selected.muted ? 'Notify about this session again' : 'No notifications from this session'}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      {selected.muted ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
+      <span className={secondaryLabel}>{selected.muted ? 'Unmute' : 'Mute'}</span>
+    </button>
+  );
+
+  const pinButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        runAction(api.updateSession(selected.id, { pinned: !selected.pinned }).then(() => undefined));
+      }}
+      aria-pressed={selected.pinned === true}
+      aria-label={selected.pinned ? 'Unpin' : 'Pin'}
+      title={selected.pinned ? 'Unpin from the top of the list' : 'Pin to the top of the list'}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      {selected.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+      <span className={secondaryLabel}>{selected.pinned ? 'Unpin' : 'Pin'}</span>
     </button>
   );
 
@@ -365,7 +555,9 @@ export function AppShell({
       className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
     >
       <Maximize2 className="size-3.5" />
-      {ptyDims ? `${ptyDims.cols}×${ptyDims.rows} · Reset` : 'Fit to screen'}
+      <span className={secondaryLabel}>
+        {ptyDims ? `${ptyDims.cols}×${ptyDims.rows} · Reset` : 'Fit to screen'}
+      </span>
     </button>
   );
 
@@ -459,9 +651,19 @@ export function AppShell({
 
               <span className="min-w-0 flex-1 leading-tight">
                 <span className="flex items-baseline gap-2">
-                  <span className="truncate text-[13px] font-medium text-base-100">
-                    {selected.title}
-                  </span>
+                  <EditableTitle
+                    key={selected.id}
+                    title={selected.title}
+                    onRename={async (title) => {
+                      setActionError(null);
+                      try {
+                        await api.updateSession(selected.id, { title });
+                      } catch (cause) {
+                        setActionError(cause instanceof ApiError ? cause.message : String(cause));
+                        throw cause;
+                      }
+                    }}
+                  />
                   {/* The full path is the first thing to go when space runs
                       out; the folder name and status carry the meaning. */}
                   <span
@@ -517,6 +719,11 @@ export function AppShell({
                         className="fixed inset-0 z-30 cursor-default"
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
+                        {timelineButton}
+                        {gitButton}
+                        {exportMenu}
+                        {muteButton}
+                        {pinButton}
                         {fitButton}
                         {isTerminalStatus(selected.status) ? restartButton : killButton}
                         {removeButton}
@@ -526,6 +733,31 @@ export function AppShell({
                 </>
               ) : (
                 <>
+                  <div role="group" aria-label="Pane layout" className="flex overflow-hidden rounded-md border border-base-700">
+                    {PANE_LAYOUTS.map((option) => {
+                      const Icon = LAYOUT_ICON[option];
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          aria-label={option === 1 ? 'Single pane' : `${option} panes`}
+                          aria-pressed={paneState.layout === option}
+                          onClick={() => changeLayout(option)}
+                          className={cn(
+                            'px-1.5 py-1 transition-colors',
+                            paneState.layout === option ? 'bg-base-700 text-base-100' : 'text-base-400 hover:text-base-100',
+                          )}
+                        >
+                          <Icon className="size-3.5" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {timelineButton}
+                  {gitButton}
+                  {exportMenu}
+                  {muteButton}
+                  {pinButton}
                   {fitButton}
                   {isTerminalStatus(selected.status) ? restartButton : killButton}
                   {removeButton}
@@ -543,15 +775,85 @@ export function AppShell({
           </div>
         )}
 
-        <div className="min-h-0 flex-1">
-          <TerminalView
-            sessionId={selectedId}
-            dims={ptyDims}
-            onSendReady={handleSendReady}
-            onInputTransformReady={handleInputTransformReady}
-            onFitPlanReady={handleFitPlanReady}
-          />
+        <div className="relative min-h-0 flex-1">
+          <Suspense fallback={null}>
+            {timelineOpen && selected && (
+              <TimelinePanel session={selected} now={now} onClose={() => setPanel(null)} />
+            )}
+            {panel === 'git' && selected && <GitPanel session={selected} onClose={() => setPanel(null)} />}
+          </Suspense>
+          <div
+            className={cn(
+              'grid h-full min-h-0 gap-px bg-base-800',
+              layout === 1 && 'grid-cols-1',
+              layout === 2 && 'grid-cols-2',
+              layout === 4 && 'grid-cols-2 grid-rows-2',
+            )}
+          >
+            {visiblePanes.map((paneId, index) => {
+              const focused = index === focusedPane;
+              const paneSession = sessions.find((s) => s.id === paneId) ?? null;
+              const terminal = (
+                <TerminalView
+                  sessionId={paneId}
+                  active={focused}
+                  dims={ptyDimsFor !== null && ptyDimsFor.sessionId === paneId ? ptyDimsFor.dims : null}
+                  onSendReady={focused ? handleSendReady : undefined}
+                  onInputTransformReady={focused ? handleInputTransformReady : undefined}
+                  onFitPlanReady={focused ? handleFitPlanReady : undefined}
+                  onSendPromptReady={focused ? handleSendPromptReady : undefined}
+                  onExportReady={focused ? handleExportReady : undefined}
+                />
+              );
+              if (layout === 1) return <div key={index} className="min-h-0">{terminal}</div>;
+              return (
+                <section
+                  key={index}
+                  aria-label={`Pane ${index + 1}`}
+                  onPointerDownCapture={() => {
+                    if (!focused) focusPaneAt(index);
+                  }}
+                  className={cn(
+                    'flex min-h-0 min-w-0 flex-col bg-base-950',
+                    focused ? 'ring-1 ring-inset ring-accent-dim' : 'opacity-90',
+                  )}
+                >
+                  <div className="flex shrink-0 items-center gap-1.5 border-b border-base-800 px-2 py-0.5 text-[11px]">
+                    {paneSession ? (
+                      <>
+                        <StatusDot status={paneSession.status} />
+                        <span className={cn('truncate', focused ? 'text-base-100' : 'text-base-400')}>
+                          {paneSession.title}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-base-500">Empty</span>
+                    )}
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    {paneId === null ? (
+                      <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-base-500">
+                        {focused ? 'Pick a session in the sidebar to show it here.' : 'Click to focus, then pick a session.'}
+                      </div>
+                    ) : (
+                      terminal
+                    )}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         </div>
+
+        {selected && (
+          <PromptComposer
+            key={selected.id}
+            session={selected}
+            sessions={sessions}
+            sendPrompt={sendPrompt}
+            sendToOther={sendToOther}
+          />
+        )}
 
         <QuickActions
           session={selected}
@@ -569,6 +871,7 @@ export function AppShell({
         )}
       </main>
 
+      <Suspense fallback={null}>
       {newOpen && (
         <NewSessionDialog
           onClose={() => setNewOpen(false)}
@@ -605,6 +908,7 @@ export function AppShell({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      </Suspense>
     </div>
   );
 }

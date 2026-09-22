@@ -3,16 +3,32 @@ import { nanoid } from 'nanoid';
 
 import { emitServerEvent } from '../bus.js';
 import { getHarness, loadHarnesses, type Harness } from '../config/harnesses.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, type Db, type SessionMetaPatch } from '../db/index.js';
 import { sendPush, type PushPayload } from '../push/sender.js';
 import type { StatusSnapshot } from '../status/engine.js';
-import { isTerminalStatus, type Session } from '../status/types.js';
+import {
+  isTerminalStatus,
+  type NotifyKind,
+  type GeneralSettings,
+  type NotifyPrefs,
+  type Session,
+} from '../status/types.js';
+import { isMuted, shouldPush } from '../notify/policy.js';
+import { readGitStatus } from '../git/status.js';
 import { PtySession } from './session.js';
+import {
+  hasTmuxSession,
+  readExitCode,
+  removeExitFile,
+  resolveBackend,
+  tmuxAvailable,
+  type PtyBackend,
+} from './tmux.js';
+import { formatPrompt } from '../../../shared/prompt.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
 const NOTIFY_COOLDOWN_MS = 30_000;
 
-type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
 
 /**
  * Kinds that are worth a *phone* buzz by default.
@@ -27,6 +43,19 @@ type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
  * Override with AGENTMASTER_PUSH_KINDS="waiting,error,done".
  */
 const DEFAULT_PUSH_KINDS: readonly NotifyKind[] = ['waiting', 'error'];
+
+const NOTIFY_PREFS_KEY = 'notify';
+const GENERAL_SETTINGS_KEY = 'general';
+/** How often stopped sessions are checked against the prune setting. */
+const PRUNE_INTERVAL_MS = 5 * 60_000;
+const HOUR_MS = 3_600_000;
+/** Coalesces the git re-read after a burst of status changes. */
+const GIT_REFRESH_DEBOUNCE_MS = 750;
+/** Browsers render at most two notification buttons. */
+const MAX_NOTIFICATION_ACTIONS = 2;
+/** Preview lines appended to a waiting notification, so it reads without opening. */
+const NOTIFICATION_PREVIEW_LINES = 2;
+const NOTIFICATION_PREVIEW_CHARS = 160;
 
 const ALL_NOTIFY_KINDS: readonly NotifyKind[] = [
   'waiting',
@@ -57,7 +86,14 @@ export interface CreateSessionInput {
   harnessId: string;
   cwd: string;
   title?: string;
+  /** Typed into the harness once it first settles (idle or waiting). */
+  initialPrompt?: string;
 }
+
+/** Statuses meaning "the harness has drawn its UI and is ready for input". */
+const READY_STATUSES = new Set(['idle', 'waiting_input', 'done']);
+/** A harness that never settles still gets its prompt, rather than silently none. */
+const INITIAL_PROMPT_DEADLINE_MS = 30_000;
 
 export interface SessionManagerOptions {
   /** Injectable for tests; defaults to the global YAML registry. */
@@ -76,6 +112,8 @@ export interface SessionManagerOptions {
   push?: (db: Db, payload: PushPayload) => Promise<unknown>;
   /** Overrides AGENTMASTER_PUSH_KINDS; mainly a test seam. */
   pushKinds?: Iterable<NotifyKind>;
+  /** Overrides AGENTMASTER_PTY_BACKEND. */
+  backend?: PtyBackend;
 }
 
 /**
@@ -97,14 +135,16 @@ export class SessionManager {
 
   private readonly map = new Map<string, PtySession>();
   private readonly lastNotified = new Map<string, number>();
-  private readonly onProcessExit = (): void => this.killAll();
-  // Kill sessions but do NOT call process.exit here. This handler is registered
-  // at construction, so exiting synchronously would preempt the HTTP server's
-  // graceful shutdown. Whoever owns the process lifecycle decides when to exit.
+  private readonly onProcessExit = (): void => this.shutdown();
+  // Let go of sessions but do NOT call process.exit here. This handler is
+  // registered at construction, so exiting synchronously would preempt the HTTP
+  // server's graceful shutdown. Whoever owns the process lifecycle decides.
   private readonly onSignal = (): void => {
-    this.killAll();
+    this.shutdown();
   };
+  readonly backend: PtyBackend;
   private processHandlersInstalled = false;
+  private readonly pruneTimer: NodeJS.Timeout;
   private disposed = false;
 
   constructor(db?: Db, opts: SessionManagerOptions = {}) {
@@ -116,9 +156,15 @@ export class SessionManager {
     this.push = opts.push ?? sendPush;
     this.pushKinds = opts.pushKinds ? new Set(opts.pushKinds) : resolvePushKinds();
 
-    // Any row still open belongs to a process from a previous run: sessions are
-    // killed on server restart, so the record must say so too.
+    this.backend = opts.backend ?? resolveBackend();
+
+    // tmux sessions left by a previous run are picked back up; every other row
+    // still open belonged to a direct PTY that died with that process.
+    this.restoreTmuxSessions();
     this.db.closeOrphanedSessions();
+
+    this.pruneTimer = setInterval(() => this.pruneStale(), PRUNE_INTERVAL_MS);
+    this.pruneTimer.unref?.();
 
     if (opts.installProcessHandlers !== false) {
       process.on('exit', this.onProcessExit);
@@ -138,24 +184,96 @@ export class SessionManager {
     const id = nanoid();
     const title = input.title ?? basename(input.cwd) ?? input.cwd;
     // Constructed first: a bad cwd or a failed spawn must not leave a DB row.
-    const session = new PtySession({ id, harness, cwd: input.cwd, title });
+    const session = new PtySession({ id, harness, cwd: input.cwd, title, backend: this.backend });
 
-    this.map.set(id, session);
     this.db.insertSession({
       id,
       harnessId: harness.id,
       cwd: input.cwd,
       title,
       createdAt: session.info.createdAt,
+      backend: this.backend,
+      ...session.size,
     });
+    this.track(session);
 
+    if (input.initialPrompt?.trim()) this.queueInitialPrompt(session, input.initialPrompt);
+    this.refreshGit(session);
+
+    emitServerEvent({ t: 'session:created', session: session.info });
+    return session.info;
+  }
+
+  /** Registers a live session and mirrors its lifecycle onto the database. */
+  private track(session: PtySession): void {
+    const id = session.id;
+    this.map.set(id, session);
     session.on('status', (snapshot: StatusSnapshot) => this.onStatus(session, snapshot));
     session.on('exit', (code: number | null) => {
       this.db.markExited(id, code);
     });
+    session.on('resize', (cols: number, rows: number) => this.db.updateSessionSize(id, cols, rows));
+  }
 
-    emitServerEvent({ t: 'session:created', session: session.info });
-    return session.info;
+  /**
+   * Re-attaches every tmux session a previous server left running. A row whose
+   * agent ended while nobody was watching is closed with its real exit code.
+   */
+  private restoreTmuxSessions(): void {
+    const rows = this.db.listOpenSessions().filter((row) => row.backend === 'tmux');
+    if (rows.length === 0) return;
+    const canAttach = tmuxAvailable();
+    for (const row of rows) {
+      const harness = this.harnessLookup(row.harnessId);
+      if (!canAttach || !harness || !hasTmuxSession(row.id)) {
+        this.db.markExited(row.id, canAttach ? readExitCode(row.id) : null);
+        removeExitFile(row.id);
+        continue;
+      }
+      try {
+        const session = new PtySession({
+          id: row.id,
+          harness,
+          cwd: row.cwd,
+          title: row.title,
+          backend: 'tmux',
+          reattach: { createdAt: row.createdAt },
+          ...(row.cols && row.rows ? { cols: row.cols, rows: row.rows } : {}),
+        });
+        session.info.pinned = row.pinned;
+        session.info.muted = row.muted;
+        this.track(session);
+        this.refreshGit(session);
+      } catch (error) {
+        process.stderr.write(
+          `[tmux] could not re-attach ${row.id}: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        this.db.markExited(row.id, null);
+      }
+    }
+  }
+
+  private queueInitialPrompt(session: PtySession, prompt: string): void {
+    let sent = false;
+    const deliver = (): void => {
+      if (sent) return;
+      sent = true;
+      clearTimeout(deadline);
+      session.off('status', onStatus);
+      // Agent CLIs enable bracketed paste, so multi-line prompts arrive whole.
+      session.write(formatPrompt(prompt, true));
+    };
+    const onStatus = (snapshot: StatusSnapshot): void => {
+      if (READY_STATUSES.has(snapshot.status)) deliver();
+    };
+    const deadline = setTimeout(deliver, INITIAL_PROMPT_DEADLINE_MS);
+    deadline.unref?.();
+    session.on('status', onStatus);
+    session.once('exit', () => {
+      sent = true;
+      clearTimeout(deadline);
+      session.off('status', onStatus);
+    });
   }
 
   get(id: string): PtySession | undefined {
@@ -178,6 +296,27 @@ export class SessionManager {
     return [...this.map.values()]
       .map((s) => s.info)
       .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /**
+   * Applies user edits (rename, pin). Returns the updated wire info, or
+   * `undefined` for an unknown id. Whitespace-only titles are rejected by the
+   * route; here a title is trimmed and stored as given.
+   */
+  update(id: string, patch: SessionMetaPatch): Session | undefined {
+    const session = this.map.get(id);
+    if (!session) return undefined;
+    const clean: SessionMetaPatch = {};
+    if (patch.title !== undefined) clean.title = patch.title.trim();
+    if (patch.pinned !== undefined) clean.pinned = patch.pinned;
+    if (patch.muted !== undefined) clean.muted = patch.muted;
+
+    this.db.updateSessionMeta(id, clean);
+    if (clean.title !== undefined) session.info.title = clean.title;
+    if (clean.pinned !== undefined) session.info.pinned = clean.pinned;
+    if (clean.muted !== undefined) session.info.muted = clean.muted;
+    emitServerEvent({ t: 'session:updated', session: session.info });
+    return session.info;
   }
 
   kill(id: string): void {
@@ -217,15 +356,47 @@ export class SessionManager {
     return session.info;
   }
 
-  /** Kills the session and forgets it entirely. */
+  /**
+   * Deletes a session for good: ends the agent (and its tmux session), and
+   * erases its database row, status history and saved exit code, so it can
+   * never come back after a restart.
+   */
   remove(id: string): void {
     const session = this.map.get(id);
     if (!session) return;
     this.map.delete(id);
+    const gitTimer = this.gitTimers.get(id);
+    if (gitTimer) clearTimeout(gitTimer);
+    this.gitTimers.delete(id);
     session.kill();
-    session.dispose();
+    session.destroy();
+    this.db.removeSession(id);
     this.clearNotifyState(id);
     emitServerEvent({ t: 'session:removed', id });
+  }
+
+  /** Deletes every session, running or not. Returns how many. */
+  removeAll(): number {
+    const count = this.map.size;
+    this.killAll();
+    return count;
+  }
+
+  /** Backend in use, and how many agents are running under it. */
+  backendInfo(): { backend: PtyBackend; running: number } {
+    const running = [...this.map.values()].filter((s) => !isTerminalStatus(s.info.status)).length;
+    return { backend: this.backend, running };
+  }
+
+  /**
+   * Server is stopping. tmux sessions are released and keep running for the
+   * next start; direct PTYs cannot outlive us and are ended.
+   */
+  shutdown(): void {
+    for (const [id, session] of [...this.map]) {
+      this.map.delete(id);
+      session.release();
+    }
   }
 
   /** Forgets every stopped session, leaving running ones alone. */
@@ -242,7 +413,8 @@ export class SessionManager {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.killAll();
+    clearInterval(this.pruneTimer);
+    this.shutdown();
     if (this.processHandlersInstalled) {
       process.off('exit', this.onProcessExit);
       process.off('SIGINT', this.onSignal);
@@ -255,11 +427,87 @@ export class SessionManager {
     this.db.insertEvent(session.id, snapshot.status, snapshot.waitKind ?? null, snapshot.at);
     emitServerEvent({ t: 'session:updated', session: session.info });
     this.maybeNotify(session, snapshot);
+    // A turn just ended: the moment files are most likely to have changed.
+    if (snapshot.status !== 'busy') this.refreshGit(session);
+  }
+
+  private readonly gitTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * Re-reads the git summary shortly after a change, coalescing bursts. Never
+   * throws; a folder that is not a repository simply has no summary.
+   */
+  refreshGit(session: PtySession, delayMs = GIT_REFRESH_DEBOUNCE_MS): void {
+    const pending = this.gitTimers.get(session.id);
+    if (pending) clearTimeout(pending);
+    const timer = setTimeout(() => {
+      this.gitTimers.delete(session.id);
+      void readGitStatus(session.info.cwd).then((status) => {
+        if (this.map.get(session.id) !== session) return;
+        const next = status
+          ? { branch: status.branch, dirty: status.files.length, ahead: status.ahead, behind: status.behind }
+          : undefined;
+        if (JSON.stringify(next) === JSON.stringify(session.info.git)) return;
+        session.info.git = next;
+        emitServerEvent({ t: 'session:updated', session: session.info });
+      });
+    }, delayMs);
+    timer.unref?.();
+    this.gitTimers.set(session.id, timer);
+  }
+
+  getGeneralSettings(): GeneralSettings {
+    const stored = this.db.getSetting<Partial<GeneralSettings>>(GENERAL_SETTINGS_KEY);
+    return { pruneAfterHours: stored?.pruneAfterHours ?? null };
+  }
+
+  setGeneralSettings(settings: GeneralSettings): GeneralSettings {
+    this.db.setSetting(GENERAL_SETTINGS_KEY, settings);
+    this.pruneStale();
+    return this.getGeneralSettings();
+  }
+
+  /**
+   * Forgets sessions that stopped longer ago than the prune setting. Running
+   * sessions are never touched, however old. Returns how many were removed.
+   */
+  pruneStale(now = this.now()): number {
+    const { pruneAfterHours } = this.getGeneralSettings();
+    if (pruneAfterHours === null) return 0;
+    const cutoff = now - pruneAfterHours * HOUR_MS;
+    const stale = [...this.map.values()].filter(
+      (s) => isTerminalStatus(s.info.status) && s.info.statusChangedAt < cutoff,
+    );
+    for (const session of stale) this.remove(session.id);
+    return stale.length;
+  }
+
+  /** Rules as stored, falling back to AGENTMASTER_PUSH_KINDS for a fresh install. */
+  getNotifyPrefs(): NotifyPrefs {
+    const stored = this.db.getSetting<Partial<NotifyPrefs>>(NOTIFY_PREFS_KEY);
+    return {
+      pushKinds: stored?.pushKinds ?? [...this.pushKinds],
+      quietHours: stored?.quietHours ?? null,
+      mutedHarnesses: stored?.mutedHarnesses ?? [],
+    };
+  }
+
+  setNotifyPrefs(prefs: NotifyPrefs): NotifyPrefs {
+    this.db.setSetting(NOTIFY_PREFS_KEY, prefs);
+    return this.getNotifyPrefs();
   }
 
   private maybeNotify(session: PtySession, snapshot: StatusSnapshot): void {
     const decision = describeNotification(session, snapshot);
     if (!decision) return;
+
+    const prefs = this.getNotifyPrefs();
+    const ctx = {
+      kind: decision.kind,
+      harnessId: session.info.harnessId,
+      sessionMuted: session.info.muted === true,
+    };
+    if (isMuted(prefs, ctx)) return;
 
     const key = `${session.id}:${decision.kind}`;
     const last = this.lastNotified.get(key);
@@ -273,8 +521,11 @@ export class SessionManager {
     // a second policy would let desktop and phone disagree about what is worth
     // interrupting for; the only difference allowed is which kinds reach the
     // phone at all.
-    if (this.pushKinds.has(decision.kind)) {
-      void this.push(this.db, { id: session.id, ...decision }).catch((error: unknown) => {
+    if (shouldPush(prefs, ctx, new Date(at))) {
+      const actions = snapshot.actions?.slice(0, MAX_NOTIFICATION_ACTIONS);
+      const payload: PushPayload = { id: session.id, ...decision };
+      if (actions && actions.length > 0) payload.actions = actions;
+      void this.push(this.db, payload).catch((error: unknown) => {
         process.stderr.write(
           `[push] send rejected: ${error instanceof Error ? error.message : String(error)}\n`,
         );
@@ -295,7 +546,29 @@ interface NotifyDecision {
   body: string;
 }
 
+/** The last non-empty screen lines, clipped: what the harness is asking. */
+function previewSnippet(preview: string | undefined): string | undefined {
+  if (!preview) return undefined;
+  const lines = preview
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const tail = lines.slice(-NOTIFICATION_PREVIEW_LINES).join('\n');
+  if (tail === '') return undefined;
+  return tail.length > NOTIFICATION_PREVIEW_CHARS ? `${tail.slice(0, NOTIFICATION_PREVIEW_CHARS - 1)}…` : tail;
+}
+
 function describeNotification(
+  session: PtySession,
+  snapshot: StatusSnapshot,
+): NotifyDecision | undefined {
+  const decision = baseNotification(session, snapshot);
+  if (!decision || decision.kind !== 'waiting') return decision;
+  const snippet = previewSnippet(snapshot.preview);
+  return snippet ? { ...decision, body: `${decision.body}\n${snippet}` } : decision;
+}
+
+function baseNotification(
   session: PtySession,
   snapshot: StatusSnapshot,
 ): NotifyDecision | undefined {

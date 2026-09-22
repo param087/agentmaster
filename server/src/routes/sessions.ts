@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { SessionManager } from '../session/manager.js';
 import { expandPath } from './fs.js';
+import { readGitDiff, readGitStatus } from '../git/status.js';
 
 /** An `Error` carrying the HTTP status the central middleware should use. */
 export interface HttpError extends Error {
@@ -17,7 +18,22 @@ const createBody = z.object({
   harnessId: z.string().min(1),
   cwd: z.string().min(1),
   title: z.string().min(1).optional(),
+  initialPrompt: z.string().max(20_000).optional(),
 });
+
+/** Session titles are shown in a 280px column; anything longer is a paste accident. */
+const MAX_TITLE_LENGTH = 120;
+
+const patchBody = z
+  .object({
+    title: z.string().trim().min(1).max(MAX_TITLE_LENGTH).optional(),
+    pinned: z.boolean().optional(),
+    muted: z.boolean().optional(),
+  })
+  .strict()
+  .refine((body) => Object.values(body).some((value) => value !== undefined), {
+    message: 'Nothing to update: send title, pinned and/or muted',
+  });
 
 const inputBody = z.object({
   keys: z.string(),
@@ -29,6 +45,12 @@ function firstIssue(error: z.ZodError): string {
   if (!issue) return 'Invalid request body';
   const path = issue.path.join('.');
   return path ? `${path}: ${issue.message}` : issue.message;
+}
+
+/** A title as a download filename: no quotes, slashes or control characters. */
+export function safeFilename(title: string): string {
+  const cleaned = title.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned.slice(0, 80) || 'session';
 }
 
 export function sessionsRouter(manager: SessionManager): Router {
@@ -56,6 +78,16 @@ export function sessionsRouter(manager: SessionManager): Router {
 
   /** Kills the process but keeps the session listed, so its output stays readable. */
   /** Forgets every stopped session at once, leaving running ones alone. */
+  /** Which PTY backend is in use, and how many agents run under it. */
+  router.get('/backend', (_req, res) => {
+    res.json(manager.backendInfo());
+  });
+
+  /** Deletes every session, running or stopped. */
+  router.post('/delete-all', (_req, res) => {
+    res.json({ deleted: manager.removeAll() });
+  });
+
   router.post('/finished/remove', (_req, res) => {
     res.json({ removed: manager.removeFinished() });
   });
@@ -65,6 +97,64 @@ export function sessionsRouter(manager: SessionManager): Router {
     if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
     manager.kill(id);
     res.status(204).end();
+  });
+
+  router.patch('/:id', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const parsed = patchBody.safeParse(req.body);
+    if (!parsed.success) return next(httpError(400, firstIssue(parsed.error)));
+    const session = manager.update(id, parsed.data);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    res.json({ session });
+  });
+
+  /** Downloads the retained output as an asciinema recording. */
+  router.get('/:id/export.cast', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    const name = safeFilename(session.info.title);
+    res.setHeader('content-type', 'application/x-asciicast');
+    res.setHeader('content-disposition', `attachment; filename="${name}.cast"`);
+    res.send(session.toCast());
+  });
+
+  /** Branch and changed files of the session's folder. */
+  router.get('/:id/git', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    void readGitStatus(session.info.cwd).then((status) => {
+      if (!status) return res.json({ repo: false, branch: null, ahead: 0, behind: 0, files: [] });
+      // Reading the status is a cheap moment to refresh the sidebar summary too.
+      manager.refreshGit(session, 0);
+      res.json({ repo: true, ...status });
+    }, next);
+  });
+
+  /**
+   * Diff of one changed file. The path must appear in the current status, so
+   * this can never be used to read arbitrary files on disk.
+   */
+  router.get('/:id/git/diff', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    const path = typeof req.query['path'] === 'string' ? req.query['path'] : '';
+    void readGitStatus(session.info.cwd)
+      .then(async (status) => {
+        const file = status?.files.find((f) => f.path === path);
+        if (!file) return next(httpError(404, `"${path}" has no changes`));
+        res.json(await readGitDiff(session.info.cwd, file));
+      })
+      .catch(next);
+  });
+
+  /** Status history for the timeline view, oldest first. */
+  router.get('/:id/events', (req, res, next) => {
+    const id = req.params.id ?? '';
+    if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
+    res.json({ events: manager.database.listEvents(id) });
   });
 
   router.post('/:id/remove', (req, res, next) => {

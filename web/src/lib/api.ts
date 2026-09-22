@@ -1,4 +1,11 @@
-import type { HarnessInfo, Session } from './types';
+import type {
+  GeneralSettings,
+  GitStatusResponse,
+  HarnessInfo,
+  NotifyPrefs,
+  Session,
+  StatusEvent,
+} from './types';
 
 /** A non-2xx response from the server, carrying its status and `{error}` message. */
 export class ApiError extends Error {
@@ -9,6 +16,15 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+export interface Preset {
+  id: string;
+  name: string;
+  harnessId: string;
+  cwd: string;
+  prompt: string | null;
+  createdAt: number;
 }
 
 export interface DirEntry {
@@ -69,14 +85,106 @@ export const api = {
     return sessions;
   },
 
-  async createSession(input: { harnessId: string; cwd: string; title?: string }): Promise<Session> {
+  async presets(): Promise<Preset[]> {
+    const { presets } = await request<{ presets: Preset[] }>('/presets');
+    return presets;
+  },
+
+  async savePreset(input: { name: string; harnessId: string; cwd: string; prompt?: string }): Promise<Preset> {
+    const { preset } = await request<{ preset: Preset }>('/presets', jsonPost(input));
+    return preset;
+  },
+
+  deletePreset(id: string): Promise<void> {
+    return request<void>(`/presets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async launchPreset(id: string): Promise<Session> {
+    const { session } = await request<{ session: Session }>(
+      `/presets/${encodeURIComponent(id)}/launch`,
+      { method: 'POST' },
+    );
+    return session;
+  },
+
+  async createSession(input: {
+    harnessId: string;
+    cwd: string;
+    title?: string;
+    initialPrompt?: string;
+  }): Promise<Session> {
     const { session } = await request<{ session: Session }>('/sessions', jsonPost(input));
+    return session;
+  },
+
+  gitStatus(id: string): Promise<GitStatusResponse> {
+    return request<GitStatusResponse>(`/sessions/${encodeURIComponent(id)}/git`);
+  },
+
+  gitDiff(id: string, path: string): Promise<{ diff: string; truncated: boolean }> {
+    return request(`/sessions/${encodeURIComponent(id)}/git/diff?path=${encodeURIComponent(path)}`);
+  },
+
+  async generalSettings(): Promise<GeneralSettings> {
+    const { settings } = await request<{ settings: GeneralSettings }>('/settings');
+    return settings;
+  },
+
+  async saveGeneralSettings(settings: GeneralSettings): Promise<GeneralSettings> {
+    const { settings: saved } = await request<{ settings: GeneralSettings }>('/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    return saved;
+  },
+
+  async notifyPrefs(): Promise<NotifyPrefs> {
+    const { prefs } = await request<{ prefs: NotifyPrefs }>('/notify-prefs');
+    return prefs;
+  },
+
+  async saveNotifyPrefs(prefs: NotifyPrefs): Promise<NotifyPrefs> {
+    const { prefs: saved } = await request<{ prefs: NotifyPrefs }>('/notify-prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(prefs),
+    });
+    return saved;
+  },
+
+  async sessionEvents(id: string): Promise<StatusEvent[]> {
+    const { events } = await request<{ events: StatusEvent[] }>(
+      `/sessions/${encodeURIComponent(id)}/events`,
+    );
+    return events;
+  },
+
+  /** Renames and/or pins a session. */
+  async updateSession(
+    id: string,
+    patch: { title?: string; pinned?: boolean; muted?: boolean },
+  ): Promise<Session> {
+    const { session } = await request<{ session: Session }>(`/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
     return session;
   },
 
   /** Kills the process but keeps the session listed so its output stays readable. */
   killSession(id: string): Promise<void> {
     return request<void>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  backendInfo(): Promise<{ backend: 'direct' | 'tmux'; running: number }> {
+    return request('/sessions/backend');
+  },
+
+  async deleteAllSessions(): Promise<number> {
+    const { deleted } = await request<{ deleted: number }>('/sessions/delete-all', { method: 'POST' });
+    return deleted;
   },
 
   removeSession(id: string): Promise<void> {

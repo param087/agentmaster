@@ -5,3 +5,6 @@ dist
 server/test/fixtures/*.local.cast
 .playwright-mcp/
 web/tsconfig.tsbuildinfo
+e2e/.tmp/
+test-results/
+playwright-report/

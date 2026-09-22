@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
-import { WebglAddon } from '@xterm/addon-webgl';
+import type { WebglAddon } from '@xterm/addon-webgl';
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 /**
  * The PTY is fixed at 120x32 server-side so two browsers viewing the same
@@ -75,7 +77,52 @@ export interface UseTerminalResult {
    * Consumed and cleared automatically after one chunk. Pass `null` to cancel.
    */
   setInputTransform: (transform: ((data: string) => string) | null) => void;
+  /**
+   * Scrolls the scrollback by `delta` lines (negative scrolls towards older
+   * output). On the alternate screen there *is* no scrollback — a full-screen
+   * TUI owns the whole grid — so the request is translated into cursor keys,
+   * which is what a native terminal's "alternate scroll mode" does.
+   */
+  scrollLines: (delta: number) => void;
+  /** Jumps back to live output. */
+  scrollToBottom: () => void;
+  /** False while the user is looking at scrollback. Always true on the alt screen. */
+  atBottom: boolean;
+  /** Plain text of scrollback + screen, trailing whitespace trimmed per line. */
+  exportText: () => string;
+  /** The same, as a standalone coloured HTML document. */
+  exportHtml: () => string;
+  /** Whether the program in the PTY has enabled bracketed paste (DECSET 2004). */
+  bracketedPaste: () => boolean;
+  /** Finds `query` in the scrollback; returns false when there is no match. */
+  search: (query: string, direction: 'next' | 'previous', options?: SearchOptions) => boolean;
+  clearSearch: () => void;
+  /** Match position for the last search; `null` until one has run. */
+  searchResults: SearchResults | null;
 }
+
+export interface SearchOptions {
+  caseSensitive?: boolean;
+  regex?: boolean;
+  /** Keep the current match if it still matches — used while typing. */
+  incremental?: boolean;
+}
+
+export interface SearchResults {
+  /** Zero-based, or -1 when the cursor match is beyond the highlight limit. */
+  index: number;
+  count: number;
+}
+
+/** Highlight colours for search matches, in the terminal palette. */
+const SEARCH_DECORATIONS: ISearchOptions['decorations'] = {
+  matchBackground: '#4d5661',
+  matchBorder: '#4d5661',
+  matchOverviewRuler: '#f0a52e',
+  activeMatchBackground: '#f0a52e',
+  activeMatchBorder: '#ffc766',
+  activeMatchColorOverviewRuler: '#ffc766',
+};
 
 /**
  * Control messages the *server* sends, as text frames.
@@ -84,9 +131,21 @@ export interface UseTerminalResult {
  * showing the dead run's output, and without clearing it the new run's output
  * would be appended to a corpse.
  */
-type ServerControlMessage = { type: 'reset' };
+type ServerControlMessage =
+  | { type: 'reset' }
+  | { type: 'modes'; alt: boolean; appCursor: boolean };
 
-function handleControl(raw: string, term: Terminal): void {
+/**
+ * Modes of the program inside tmux. With the tmux backend the browser only sees
+ * tmux's client, which stays on the normal screen, so full-screen programs are
+ * reported by the server instead of read from xterm.
+ */
+export interface InnerModes {
+  alt: boolean;
+  appCursor: boolean;
+}
+
+function handleControl(raw: string, term: Terminal, onModes: (modes: InnerModes) => void): void {
   let message: unknown;
   try {
     message = JSON.parse(raw);
@@ -94,8 +153,9 @@ function handleControl(raw: string, term: Terminal): void {
     return; // Unparseable control is ignored, never rendered.
   }
   if (typeof message !== 'object' || message === null) return;
-  const { type } = message as Partial<ServerControlMessage>;
-  if (type === 'reset') term.reset();
+  const msg = message as Partial<ServerControlMessage> & { alt?: unknown; appCursor?: unknown };
+  if (msg.type === 'reset') term.reset();
+  if (msg.type === 'modes') onModes({ alt: msg.alt === true, appCursor: msg.appCursor === true });
 }
 
 /**
@@ -120,6 +180,64 @@ export interface TerminalDims {
   rows: number;
 }
 
+/**
+ * Read-only terminal probe for the e2e suite, enabled by `localStorage.e2e`.
+ *
+ * The WebGL renderer paints to a canvas, so there is no DOM text to assert on;
+ * this exposes the buffer instead. Never enabled for real users.
+ */
+interface TerminalProbe {
+  text: () => string;
+  viewportY: () => number;
+  baseY: () => number;
+  bufferType: () => string;
+}
+
+function exposeForTests(
+  term: Terminal,
+  sessionId: string,
+  innerModes: () => InnerModes | null,
+): () => void {
+  let enabled = false;
+  try {
+    enabled = window.localStorage.getItem('e2e') === '1';
+  } catch {
+    return () => {};
+  }
+  if (!enabled) return () => {};
+  const probe: TerminalProbe = {
+    text: () => {
+      const buffer = term.buffer.active;
+      const lines: string[] = [];
+      for (let i = 0; i < buffer.length; i += 1) {
+        lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+      }
+      return lines.join('\n');
+    },
+    viewportY: () => term.buffer.active.viewportY,
+    baseY: () => term.buffer.active.baseY,
+    // What the user is effectively on, counting a full-screen program in tmux.
+    bufferType: () => (innerModes()?.alt ? 'alternate' : term.buffer.active.type),
+  };
+  const host = window as unknown as { __term?: TerminalProbe; __terms?: Record<string, TerminalProbe> };
+  host.__term = probe;
+  host.__terms = { ...host.__terms, [sessionId]: probe };
+  return () => {
+    if (host.__term === probe) delete host.__term;
+    if (host.__terms?.[sessionId] === probe) delete host.__terms[sessionId];
+  };
+}
+
+/**
+ * The byte sequence for an arrow key. Programs that enable application cursor
+ * keys (DECCKM, `ESC [ ? 1 h`) — vim, less, most TUIs — expect `ESC O A`;
+ * everything else expects `ESC [ A`.
+ */
+export function arrowKey(direction: 'up' | 'down', applicationMode: boolean): string {
+  const final = direction === 'up' ? 'A' : 'B';
+  return applicationMode ? `\x1bO${final}` : `\x1b[${final}`;
+}
+
 function terminalUrl(sessionId: string, dims: TerminalDims | null): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${scheme}://${window.location.host}/ws/term/${encodeURIComponent(sessionId)}`;
@@ -139,9 +257,16 @@ export function useTerminal(
 ): UseTerminalResult {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  /** Set only by a tmux-backed server; null means "trust xterm's own modes". */
+  const innerModesRef = useRef<InnerModes | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const inputTransformRef = useRef<((data: string) => string) | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
 
   // Destructured so the effect depends on the numbers, not on the identity of a
   // freshly-built object — otherwise every parent render would tear the
@@ -180,6 +305,36 @@ export function useTerminal(
     });
 
     term.open(container);
+    termRef.current = term;
+    innerModesRef.current = null;
+    const unexpose = exposeForTests(term, sessionId, () => innerModesRef.current);
+
+    const serializeAddon = new SerializeAddon();
+    term.loadAddon(serializeAddon);
+    serializeRef.current = serializeAddon;
+
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchRef.current = searchAddon;
+    setSearchResults(null);
+    const searchListener = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (!cancelled) setSearchResults({ index: resultIndex, count: resultCount });
+    });
+
+    // ---- scroll position tracking ----------------------------------------
+    //
+    // Drives the "jump to live" affordance. The alt screen has no scrollback,
+    // so it is always "at the bottom" by definition.
+    const syncAtBottom = (): void => {
+      if (cancelled) return;
+      const buffer = term.buffer.active;
+      const innerAlt = innerModesRef.current?.alt === true;
+      setAtBottom(innerAlt || buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY);
+    };
+    const scrollListener = term.onScroll(syncAtBottom);
+    const writeListener = term.onWriteParsed(syncAtBottom);
+    const bufferListener = term.buffer.onBufferChange(syncAtBottom);
+    syncAtBottom();
 
     // WebGL context creation genuinely fails on some machines and in some
     // remote-display setups; falling back to the canvas renderer is far better
@@ -189,19 +344,24 @@ export function useTerminal(
     // font measurement, and attaching WebGL before that settles binds the
     // renderer to a half-measured grid.
     let webgl: WebglAddon | null = null;
+    // Imported on demand: the renderer is a sizeable chunk and only useful once
+    // a terminal is actually on screen.
     const webglFrame = requestAnimationFrame(() => {
       if (cancelled || container.clientWidth === 0) return;
-      try {
-        const addon = new WebglAddon();
-        addon.onContextLoss(() => {
-          addon.dispose();
-          if (webgl === addon) webgl = null;
+      void import('@xterm/addon-webgl')
+        .then(({ WebglAddon: Addon }) => {
+          if (cancelled) return;
+          const addon = new Addon();
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webgl === addon) webgl = null;
+          });
+          term.loadAddon(addon);
+          webgl = addon;
+        })
+        .catch((cause: unknown) => {
+          console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
         });
-        term.loadAddon(addon);
-        webgl = addon;
-      } catch (cause) {
-        console.warn('[terminal] WebGL renderer unavailable, using canvas', cause);
-      }
     });
 
     const encoder = new TextEncoder();
@@ -286,7 +446,12 @@ export function useTerminal(
           term.write(new Uint8Array(event.data));
           return;
         }
-        if (typeof event.data === 'string') handleControl(event.data, term);
+        if (typeof event.data === 'string') {
+          handleControl(event.data, term, (modes) => {
+            innerModesRef.current = modes;
+            syncAtBottom();
+          });
+        }
       };
 
       ws.onerror = () => {
@@ -338,7 +503,15 @@ export function useTerminal(
 
       cancelAnimationFrame(webglFrame);
       dataListener.dispose();
+      scrollListener.dispose();
+      writeListener.dispose();
+      bufferListener.dispose();
       webgl?.dispose();
+      unexpose();
+      searchListener.dispose();
+      searchRef.current = null;
+      serializeRef.current = null;
+      termRef.current = null;
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session
       // switches would exhaust the browser's context pool.
       term.dispose();
@@ -365,5 +538,97 @@ export function useTerminal(
     [],
   );
 
-  return { containerRef, connected, error, send, sendControl, setInputTransform };
+  const scrollLines = useCallback((delta: number): void => {
+    const term = termRef.current;
+    if (!term || delta === 0) return;
+    const inner = innerModesRef.current;
+    if (inner?.alt || term.buffer.active.type === 'alternate') {
+      // Full-screen TUIs (Claude Code, vim, less, tmux) keep no scrollback of
+      // their own: the only way to move within them is to give them the key
+      // they already understand, in the form they asked for (DECCKM).
+      const key = arrowKey(
+        delta < 0 ? 'up' : 'down',
+        inner?.alt ? inner.appCursor : term.modes.applicationCursorKeysMode,
+      );
+      send(key.repeat(Math.min(Math.abs(delta), 20)));
+      return;
+    }
+    term.scrollLines(delta);
+  }, [send]);
+
+  const scrollToBottom = useCallback((): void => {
+    termRef.current?.scrollToBottom();
+  }, []);
+
+  const search = useCallback(
+    (query: string, direction: 'next' | 'previous', options: SearchOptions = {}): boolean => {
+      const addon = searchRef.current;
+      if (!addon) return false;
+      if (query === '') {
+        addon.clearDecorations();
+        setSearchResults(null);
+        return false;
+      }
+      const opts: ISearchOptions = { ...options, decorations: SEARCH_DECORATIONS };
+      try {
+        return direction === 'next' ? addon.findNext(query, opts) : addon.findPrevious(query, opts);
+      } catch {
+        // An invalid regex mid-typing ("foo(") is not an error worth surfacing.
+        setSearchResults({ index: -1, count: 0 });
+        return false;
+      }
+    },
+    [],
+  );
+
+  const exportText = useCallback((): string => {
+    const term = termRef.current;
+    if (!term) return '';
+    const buffer = term.buffer.normal;
+    const lines: string[] = [];
+    for (let i = 0; i < buffer.length; i += 1) {
+      const line = buffer.getLine(i);
+      if (!line) continue;
+      // Wrapped rows continue the previous logical line rather than start one.
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return `${lines.join('\n')}\n`;
+  }, []);
+
+  const exportHtml = useCallback(
+    (): string => serializeRef.current?.serializeAsHTML({ includeGlobalBackground: true }) ?? '',
+    [],
+  );
+
+  const bracketedPaste = useCallback(
+    (): boolean => termRef.current?.modes.bracketedPasteMode ?? false,
+    [],
+  );
+
+  const clearSearch = useCallback((): void => {
+    searchRef.current?.clearDecorations();
+    termRef.current?.clearSelection();
+    setSearchResults(null);
+  }, []);
+
+  return {
+    exportText,
+    exportHtml,
+    bracketedPaste,
+    search,
+    clearSearch,
+    searchResults,
+    containerRef,
+    connected,
+    error,
+    send,
+    sendControl,
+    setInputTransform,
+    scrollLines,
+    scrollToBottom,
+    atBottom,
+  };
 }

@@ -33,9 +33,8 @@ describe('migrations', () => {
     return v;
   }
 
-  // Bumped deliberately with each migration. 003 adds harness_prefs, so a fresh
-  // database now lands on user_version 3.
-  const LATEST_SCHEMA = 3;
+  // Bumped deliberately with each migration. 007 adds sessions.backend/cols/rows.
+  const LATEST_SCHEMA = 7;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
@@ -126,6 +125,11 @@ describe('sessions', () => {
       createdAt: 1000,
       exitedAt: null,
       exitCode: null,
+      pinned: false,
+      muted: false,
+      backend: 'direct',
+      cols: null,
+      rows: null,
     });
   });
 
@@ -182,11 +186,12 @@ describe('events', () => {
     expect(db.listEvents('s1')[0]?.at).toBeGreaterThanOrEqual(before);
   });
 
-  it('listEvents respects limit', () => {
+  it('listEvents keeps the most recent events when limited, oldest first', () => {
     seed('s1', 1000);
     db.insertEvent('s1', 'busy', null, 1);
     db.insertEvent('s1', 'idle', null, 2);
-    expect(db.listEvents('s1', 1).map((r) => r.status)).toEqual(['busy']);
+    db.insertEvent('s1', 'done', null, 3);
+    expect(db.listEvents('s1', 2).map((r) => r.status)).toEqual(['idle', 'done']);
   });
 
   it('throws when inserting an event for a nonexistent session', () => {
@@ -213,6 +218,26 @@ describe('closeOrphanedSessions', () => {
     expect(done?.exitCode).toBe(42);
 
     expect(db.closeOrphanedSessions(9999)).toBe(0);
+  });
+});
+
+describe('updateSessionMeta', () => {
+  it('renames and pins independently, defaulting pinned to false', () => {
+    seed('m', 1);
+    expect(db.getSession('m')?.pinned).toBe(false);
+    db.updateSessionMeta('m', { title: 'renamed' });
+    expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: false });
+    db.updateSessionMeta('m', { pinned: true });
+    expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: true });
+  });
+});
+
+describe('settings', () => {
+  it('round-trips JSON values and overwrites', () => {
+    expect(db.getSetting('k')).toBeUndefined();
+    db.setSetting('k', { a: 1 });
+    db.setSetting('k', { a: 2, b: [true] });
+    expect(db.getSetting('k')).toEqual({ a: 2, b: [true] });
   });
 });
 

@@ -5,7 +5,20 @@ import * as pty from 'node-pty';
 import type { Harness } from '../config/harnesses.js';
 import { isAcknowledgeable, StatusEngine, type StatusSnapshot } from '../status/engine.js';
 import type { Session } from '../status/types.js';
+import { CastRecorder } from './cast-recorder.js';
 import { RingBuffer } from './ring-buffer.js';
+import {
+  attachArgs,
+  captureHistory,
+  hasTmuxSession,
+  killTmuxSession,
+  newSessionArgs,
+  readExitCode,
+  readPaneModes,
+  removeExitFile,
+  type PaneModes,
+  type PtyBackend,
+} from './tmux.js';
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
@@ -21,7 +34,10 @@ const SIGKILL_GRACE_MS = 3000;
  * meaning beyond making a leaked viewer identifiable in a debugger.
  */
 /** A control message sent *to* the browser, distinct from terminal bytes. */
-export type ViewerControl = { type: 'reset' };
+export type ViewerControl =
+  | { type: 'reset' }
+  /** tmux only: the inner program's modes, which the browser cannot see. */
+  | { type: 'modes'; alt: boolean; appCursor: boolean };
 
 export interface SessionViewer {
   send(data: Buffer): void;
@@ -44,7 +60,19 @@ export interface SessionOptions {
   cols?: number;
   rows?: number;
   scrollbackBytes?: number;
+  /** `tmux` keeps the agent alive across server restarts. Default `direct`. */
+  backend?: PtyBackend;
+  /**
+   * Re-attach to a tmux session left running by a previous server process,
+   * instead of starting the harness. Only meaningful with `backend: 'tmux'`.
+   */
+  reattach?: { createdAt: number };
 }
+
+/** Consecutive unexpected tmux client deaths tolerated before giving up. */
+const MAX_REATTACH_ATTEMPTS = 3;
+/** Debounce for re-reading the inner program's modes after output. */
+const MODES_CHECK_DELAY_MS = 120;
 
 /**
  * Builds the child environment.
@@ -61,6 +89,10 @@ function childEnv(): Record<string, string | undefined> {
     COLORTERM: 'truecolor',
   };
   delete env['NODE_OPTIONS'];
+  // Set when agentmaster itself runs inside tmux; the client would refuse to
+  // nest ("sessions should be nested with care") and exit immediately.
+  delete env['TMUX'];
+  delete env['TMUX_PANE'];
   return env;
 }
 
@@ -95,8 +127,15 @@ export class PtySession extends EventEmitter {
   readonly info: Session;
 
   private readonly harness: Harness;
+  readonly backend: PtyBackend;
   private pty: pty.IPty;
+  /** Next spawn attaches to an existing tmux session rather than starting one. */
+  private attachNext: boolean;
+  private reattachAttempts = 0;
+  private paneModes: PaneModes = { alt: false, appCursor: false };
+  private modesTimer: NodeJS.Timeout | undefined;
   private readonly ringBuffer: RingBuffer;
+  private readonly cast: CastRecorder;
   private engine: StatusEngine;
   private readonly cwd: string;
   private cols: number;
@@ -130,14 +169,23 @@ export class PtySession extends EventEmitter {
 
     this.id = opts.id;
     this.harness = opts.harness;
+    this.backend = opts.backend ?? 'direct';
+    this.attachNext = this.backend === 'tmux' && opts.reattach !== undefined;
     this.cwd = opts.cwd;
     this.cols = cols;
     this.rows = rows;
     this.ringBuffer = new RingBuffer(opts.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES);
+    this.cast = new CastRecorder(opts.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES, cols, rows);
     this.engine = new StatusEngine(opts.harness, { cols, rows });
+    // A re-attached session's earlier output lives in tmux's scrollback; seed
+    // the replay buffer with it so a browser opens onto history, not a void.
+    if (this.attachNext) {
+      const history = captureHistory(this.id);
+      if (history) this.ringBuffer.push(Buffer.from(history, 'utf8'));
+    }
     this.pty = this.spawn();
 
-    const now = Date.now();
+    const now = opts.reattach?.createdAt ?? Date.now();
     this.info = {
       id: opts.id,
       harnessId: opts.harness.id,
@@ -159,9 +207,17 @@ export class PtySession extends EventEmitter {
    * the child's PATH resolves it; an explicit path is used as-is.
    */
   private spawn(): pty.IPty {
-    const command = this.harness.command;
+    const tmux = this.backend === 'tmux';
+    const command = tmux ? 'tmux' : this.harness.command;
+    const args = !tmux
+      ? this.harness.args
+      : this.attachNext
+        ? attachArgs(this.id)
+        : newSessionArgs(this.id, this.cwd, this.harness.command, this.harness.args);
+    this.attachNext = false;
+    if (tmux) removeExitFile(this.id);
     try {
-      return pty.spawn(command, this.harness.args, {
+      return pty.spawn(command, args, {
         name: 'xterm-256color',
         cols: this.cols,
         rows: this.rows,
@@ -180,8 +236,46 @@ export class PtySession extends EventEmitter {
   /** Attaches listeners to the current engine and PTY. Re-run on restart. */
   private wire(): void {
     this.engine.on('status', (snapshot: StatusSnapshot) => this.onStatus(snapshot));
-    this.pty.onData((chunk) => this.onData(chunk));
-    this.pty.onExit(({ exitCode }) => this.onExit(exitCode));
+    this.wirePty();
+  }
+
+  private wirePty(): void {
+    const current = this.pty;
+    current.onData((chunk) => {
+      if (this.pty === current) this.onData(chunk);
+    });
+    current.onExit(({ exitCode }) => {
+      if (this.pty === current) this.onClientExit(exitCode);
+    });
+  }
+
+  /**
+   * The PTY child ended. For `direct` that is the harness itself. For `tmux`
+   * it is only the client: if the session is still alive the client died on
+   * its own (never by our hand — disposal detaches listeners first), so we
+   * simply attach again; otherwise the agent has ended and its wrapper left
+   * the real exit code behind.
+   */
+  private onClientExit(clientCode: number | null): void {
+    // After release/dispose the client is killed on purpose; never re-attach.
+    if (this.disposed) return;
+    if (this.backend !== 'tmux') {
+      this.onExit(clientCode);
+      return;
+    }
+    if (!this.killedByUser && hasTmuxSession(this.id) && this.reattachAttempts < MAX_REATTACH_ATTEMPTS) {
+      this.reattachAttempts += 1;
+      this.attachNext = true;
+      try {
+        this.pty = this.spawn();
+        this.info.pid = this.pty.pid;
+        this.wirePty();
+        return;
+      } catch {
+        // Fall through: treat an un-attachable session as ended.
+      }
+    }
+    this.onExit(this.killedByUser ? null : readExitCode(this.id));
   }
 
   /**
@@ -202,11 +296,13 @@ export class PtySession extends EventEmitter {
     this.clearKillTimer();
     this.engine.dispose();
     this.ringBuffer.clear();
+    this.cast.clear();
 
     this.exited = false;
     this.killedByUser = false;
     this.acknowledging = false;
     this.restarts += 1;
+    this.reattachAttempts = 0;
 
     this.engine = new StatusEngine(this.harness, { cols: this.cols, rows: this.rows });
     this.pty = this.spawn();
@@ -217,6 +313,7 @@ export class PtySession extends EventEmitter {
     delete this.info.waitKind;
     delete this.info.actions;
     delete this.info.matchedRule;
+    delete this.info.preview;
     delete this.info.busySince;
     this.info.status = 'starting';
     this.info.pid = this.pty.pid;
@@ -240,6 +337,11 @@ export class PtySession extends EventEmitter {
     return this.ringBuffer.read();
   }
 
+  /** The retained output as an asciicast v2 recording. */
+  toCast(): string {
+    return this.cast.toCast(this.info.title);
+  }
+
   write(data: string | Buffer): void {
     if (this.exited || this.disposed) return;
     // Told before the PTY, so the engine knows a turn was submitted by the time
@@ -257,6 +359,7 @@ export class PtySession extends EventEmitter {
    */
   attach(viewer: SessionViewer): void {
     this.viewers.add(viewer);
+    if (this.backend === 'tmux') viewer.sendControl?.({ type: 'modes', ...this.paneModes });
     if (this.focusedViewers.size > 0) this.engine.acknowledge();
   }
 
@@ -305,6 +408,8 @@ export class PtySession extends EventEmitter {
     }
     this.cols = cols;
     this.rows = rows;
+    this.cast.resize(cols, rows);
+    this.emit('resize', cols, rows);
 
     // Everything in the ring buffer was drawn for the *old* width. Replaying it
     // into a terminal of the new size overlays two differently-wrapped renders
@@ -337,6 +442,22 @@ export class PtySession extends EventEmitter {
   kill(): void {
     if (this.exited || this.disposed) return;
     this.killedByUser = true;
+    if (this.backend === 'tmux') {
+      // The agent lives in tmux, not in our PTY: killing the client alone would
+      // only detach. Ending the session takes the agent with it. The client is
+      // ended too, and the session killed once more shortly after, because a
+      // kill issued right after spawn can land before tmux has created the
+      // session at all.
+      killTmuxSession(this.id);
+      try {
+        this.pty.kill('SIGTERM');
+      } catch {
+        // Already gone.
+      }
+      const retry = setTimeout(() => killTmuxSession(this.id), SIGKILL_GRACE_MS / 6);
+      retry.unref?.();
+      return;
+    }
     try {
       this.pty.kill('SIGTERM');
     } catch {
@@ -357,10 +478,30 @@ export class PtySession extends EventEmitter {
     this.killTimer.unref?.();
   }
 
+  /**
+   * Lets go of the session without ending it. For `tmux` the agent keeps
+   * running and can be re-attached by the next server; for `direct` there is
+   * nothing to leave behind, so it is the same as {@link dispose}.
+   */
+  release(): void {
+    this.dispose();
+  }
+
+  /** Ends the agent for good and removes everything tmux kept for it. */
+  destroy(): void {
+    if (this.backend === 'tmux') {
+      this.killedByUser = true;
+      killTmuxSession(this.id);
+      removeExitFile(this.id);
+    }
+    this.dispose();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.clearKillTimer();
+    if (this.modesTimer) clearTimeout(this.modesTimer);
     this.viewers.clear();
     this.focusedViewers.clear();
     this.engine.dispose();
@@ -386,8 +527,25 @@ export class PtySession extends EventEmitter {
     const bytes = Buffer.from(chunk, 'utf8');
     this.broadcast(bytes);
     this.ringBuffer.push(bytes);
+    this.cast.output(chunk);
+    if (this.backend === 'tmux') this.scheduleModesCheck();
     // Never `ringBuffer.read()` here: it copies up to 2 MB per chunk.
     void this.engine.onData(bytes);
+  }
+
+  /** Mode switches arrive as output; re-read them shortly after it settles. */
+  private scheduleModesCheck(): void {
+    if (this.modesTimer) return;
+    this.modesTimer = setTimeout(() => {
+      this.modesTimer = undefined;
+      void readPaneModes(this.id).then((modes) => {
+        if (!modes || this.disposed) return;
+        if (modes.alt === this.paneModes.alt && modes.appCursor === this.paneModes.appCursor) return;
+        this.paneModes = modes;
+        this.broadcastControl({ type: 'modes', ...modes });
+      });
+    }, MODES_CHECK_DELAY_MS);
+    this.modesTimer.unref?.();
   }
 
   private broadcast(bytes: Buffer): void {
@@ -455,6 +613,7 @@ export class PtySession extends EventEmitter {
     this.info.waitKind = snapshot.waitKind;
     this.info.actions = snapshot.actions;
     this.info.matchedRule = snapshot.matchedRule;
+    this.info.preview = snapshot.preview;
     this.info.statusChangedAt = snapshot.at;
     if (snapshot.status === 'busy') {
       this.info.busySince ??= snapshot.at;
@@ -463,6 +622,10 @@ export class PtySession extends EventEmitter {
     }
     if (snapshot.exitCode !== undefined) this.info.exitCode = snapshot.exitCode;
     this.emit('status', snapshot);
+  }
+
+  get size(): { cols: number; rows: number } {
+    return { cols: this.cols, rows: this.rows };
   }
 
   /** The harness this session was spawned from. */

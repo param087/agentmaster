@@ -59,6 +59,7 @@ a soft keyboard has no room for:
 
 - Node 22+ (developed on 24)
 - Whichever harness CLIs you want to drive, on your `PATH`
+- Optional: [tmux](https://github.com/tmux/tmux) (`brew install tmux`) so agents keep running when the server restarts
 
 ## Setup
 
@@ -99,9 +100,19 @@ npm rebuild node-pty better-sqlite3
 
 - **Needs attention** — amber sessions, longest-waiting first
 - **Quick actions** — when a session is blocked, its harness's answer buttons appear under the terminal. They send keystrokes; a click is indistinguishable from typing.
-- **Kill** stops the process but keeps the session listed, so its output stays readable. **Restart** re-runs the same harness in the same folder, reusing the session's slot and clearing the terminal. **Delete** forgets it for good, and **Clear** in the sidebar header forgets every stopped session at once.
+- **Kill** stops the process but keeps the session listed, so its output stays readable. **Restart** re-runs the same harness in the same folder, reusing the session's slot and clearing the terminal. **Delete** stops the agent and erases the session, its output and its history for good (it will not come back after a restart). **Clear** in the sidebar header deletes every stopped session at once, and **Settings → Background sessions → Delete all sessions** deletes everything.
+- **Rename / Pin / Mute** — click the title to rename; pin keeps a session at the top; mute silences its notifications. The sidebar gets a filter box once you have a few sessions.
+- **Prompt box** — a normal text box under the terminal. Enter sends, Shift+Enter adds a line; multi-line prompts arrive as one message. The people icon also sends the prompt to other sessions.
+- **Find** — `⌘F` searches the terminal scrollback (case and regex toggles). On phones, use the search button.
+- **Presets** — in the new-session dialog, set an optional first prompt and tick *Save as preset* to relaunch the same harness + folder + prompt in one click.
+- **Screen preview** — the Needs attention list shows the last lines of screen from when each session stopped for you.
+- **Timeline** — time working vs. waiting on you, number of stops, longest wait.
+- **Changes** — branch and changed-file count in the sidebar, plus a read-only panel of changed files and diffs.
+- **Export** — download a session as text, coloured HTML, or an asciinema `.cast` recording.
+- **Split view** (desktop) — 1, 2 or 4 panes; input goes to the focused pane.
+- **Settings** — phone rules (which events push, quiet hours, muted harnesses), auto-deleting stopped sessions after a set time (off by default), and background sessions.
 - **Notifications** — fired when a session needs you, finishes, or crashes. Enable via the gear icon. Killing a session never notifies — you already know. Desktop notifications work while the tab is open in the background; **Web Push** (gear icon → Phone notifications) reaches you with the app closed.
-- `⌘N` new session · `⌘K` cycle the attention queue (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
+- `⌘N` new session · `⌘K` cycle the attention queue · `⌘F` find · `⌘1–9` jump to a session · `⌘↑/↓` previous/next session (Ctrl+Shift on non-Mac, so readline's Ctrl-K/Ctrl-N still reach the harness)
 
 ### Amber vs green
 
@@ -127,15 +138,21 @@ as `claude -p "do X"` launched from `args`.
 minimised tab does not count as seen — the browser sends an explicit focus
 message, and only a *focused* viewer acknowledges anything.
 
-**Sessions are killed when the server stops.** This is deliberate for v1: nothing
-is persisted across a restart, and in development `tsx watch` restarts the server
-on every code change, which is the usual reason sessions vanish unexpectedly.
+### Sessions across server restarts
 
-Within a single run, a stopped session keeps its scrollback so you can read what
-happened, and `Restart` brings it back. Its event history survives a restart too,
-so the timeline reads as one continuous session rather than losing the earlier
-run. Stopped sessions are never pruned automatically — silently deleting history
-is worse than a long list — so use **Clear** when the list gets noisy.
+With **tmux installed**, each agent runs in its own tmux session on a private
+tmux server (`tmux -L agentmaster`, separate from your own tmux). Stopping the
+server — including `tsx watch` restarting it on every code change — leaves the
+agents running; on the next start they re-attach with their earlier output.
+An agent that finished while the server was down shows as stopped with its real
+exit code. Use **Kill** or **Delete** to actually end an agent.
+
+Without tmux, agents are stopped when the server stops, as before. Choose
+explicitly with `AGENTMASTER_PTY_BACKEND=tmux|direct`.
+
+A stopped session keeps its scrollback so you can read what happened, and
+`Restart` brings it back. Stopped sessions are only pruned automatically if you
+turn that on in **Settings → Housekeeping**.
 
 ## `harnesses.yaml`
 
@@ -376,7 +393,8 @@ mid-menu dismisses the arrows you were using.
 npm run dev         # api + web
 npm run dev:server  # api only, 127.0.0.1:7180
 npm run dev:web     # vite only, 5273
-npm test            # server test suite
+npm test            # server + web unit tests
+npm run e2e         # Playwright end-to-end suite (builds, runs its own server on :7390)
 npm run typecheck   # server + web
 npm run build       # production web bundle
 ```
@@ -386,7 +404,9 @@ npm run build       # production web bundle
 ```
 harnesses.yaml            harness registry + detection rules
 server/src/
-  session/                PtySession (pty + ring buffer + fan-out), SessionManager
+  session/                PtySession (pty + ring buffer + fan-out), SessionManager, tmux backend
+  git/                    read-only git status and diffs
+  notify/                 notification rules (quiet hours, mutes)
   status/                 ScreenModel (headless xterm), StatusEngine (state machine)
   config/                 YAML parsing, validation, hot reload
   db/                     SQLite history
@@ -396,6 +416,8 @@ web/src/
   hooks/                  use-terminal, use-events, use-notifications, use-push
   components/             shell, sidebar, attention queue, terminal, quick actions
 web/public/               PWA manifest, icons, push service worker
+shared/                   wire types and prompt formatting used by both sides
+e2e/                      Playwright tests + a bash-only harness registry
 ```
 
 ## Design notes
@@ -407,8 +429,10 @@ down instead, never up.
 **Notification policy lives on the server**, including a 30s per-(session, kind)
 cooldown. The browser only applies your local mutes.
 
-**The database is history, not state.** Sessions die with the server, so any row
-left open on boot is marked exited.
+**The database is history, not state.** On boot, open rows for tmux sessions
+that are still alive are re-attached; every other open row is marked exited.
+
+**Wire types live in `shared/types.ts`**, imported by both server and web.
 
 ## License
 
@@ -427,8 +451,7 @@ by, or sponsored by any of them.
 
 ## Not in v1
 
-Remote access, auth, multi-user, session persistence across restarts, cost
-tracking.
+Remote access, auth, multi-user, cost tracking.
 
 **The service worker deliberately caches nothing.** The app is a live mirror of
 PTYs on a server it must be talking to, so there is no offline story worth

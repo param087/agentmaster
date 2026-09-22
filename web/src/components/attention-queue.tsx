@@ -1,5 +1,6 @@
 import type { Session } from '../lib/types';
 import { isModalWait } from '../lib/types';
+import { ScreenPreview } from './screen-preview';
 import { SessionRow } from './session-row';
 
 /**
@@ -47,14 +48,19 @@ export function AttentionQueue({ sessions, selectedId, now, onSelect }: Attentio
 
       <div className="flex flex-col gap-0.5">
         {waiting.map((session) => (
-          <SessionRow
-            key={session.id}
-            session={session}
-            selected={session.id === selectedId}
-            now={now}
-            showMatchedRule
-            onSelect={onSelect}
-          />
+          <div key={session.id}>
+            <SessionRow
+              session={session}
+              selected={session.id === selectedId}
+              now={now}
+              showMatchedRule
+              onSelect={onSelect}
+            />
+            {/* The selected session's screen is already on display. */}
+            {session.preview !== undefined && session.id !== selectedId && (
+              <ScreenPreview preview={session.preview} label={`Screen of ${session.title}`} />
+            )}
+          </div>
         ))}
       </div>
     </section>
