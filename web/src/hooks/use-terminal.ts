@@ -210,6 +210,16 @@ function exposeForTests(term: Terminal, sessionId: string): () => void {
   };
 }
 
+/**
+ * The byte sequence for an arrow key. Programs that enable application cursor
+ * keys (DECCKM, `ESC [ ? 1 h`) — vim, less, most TUIs — expect `ESC O A`;
+ * everything else expects `ESC [ A`.
+ */
+export function arrowKey(direction: 'up' | 'down', applicationMode: boolean): string {
+  const final = direction === 'up' ? 'A' : 'B';
+  return applicationMode ? `\x1bO${final}` : `\x1b[${final}`;
+}
+
 function terminalUrl(sessionId: string, dims: TerminalDims | null): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${scheme}://${window.location.host}/ws/term/${encodeURIComponent(sessionId)}`;
@@ -502,9 +512,8 @@ export function useTerminal(
     if (term.buffer.active.type === 'alternate') {
       // Full-screen TUIs (Claude Code, vim, less, tmux) keep no scrollback of
       // their own: the only way to move within them is to give them the key
-      // they already understand. `\x1b[A/B` is the normal-cursor-key form; the
-      // application-cursor-key form is accepted by every TUI we target.
-      const key = delta < 0 ? '\x1b[A' : '\x1b[B';
+      // they already understand, in the form they asked for (DECCKM).
+      const key = arrowKey(delta < 0 ? 'up' : 'down', term.modes.applicationCursorKeysMode);
       send(key.repeat(Math.min(Math.abs(delta), 20)));
       return;
     }
