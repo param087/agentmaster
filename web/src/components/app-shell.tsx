@@ -21,7 +21,8 @@ import {
 import type { Session } from '../lib/types';
 import { api, ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
-import { isPrimaryModifier } from '../lib/keys';
+import { isAppShortcut, shortcutDigit } from '../lib/keys';
+import { orderSessions } from '../lib/session-order';
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
@@ -219,6 +220,7 @@ export function AppShell({
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
 
   const waiting = useMemo(() => attentionOrder(sessions), [sessions]);
+  const sidebarOrder = useMemo(() => orderSessions(sessions), [sessions]);
 
   /** Cycles through the attention queue in the same order the sidebar shows. */
   const cycleAttention = useCallback((): void => {
@@ -233,19 +235,33 @@ export function AppShell({
   // every bare key, Ctrl-C and ⇧Tab — reaches the PTY verbatim.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!isPrimaryModifier(event) || event.altKey || event.shiftKey) return;
+      if (!isAppShortcut(event)) return;
       const key = event.key.toLowerCase();
+      const digit = shortcutDigit(event);
       if (key === 'n') {
         event.preventDefault();
         setNewOpen(true);
       } else if (key === 'k') {
         event.preventDefault();
         cycleAttention();
+      } else if (digit !== null) {
+        // ⌘1…⌘9: the Nth session in sidebar order.
+        const target = sidebarOrder[digit - 1];
+        if (!target) return;
+        event.preventDefault();
+        onSelect(target.id);
+      } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        if (sidebarOrder.length === 0) return;
+        event.preventDefault();
+        const index = sidebarOrder.findIndex((s) => s.id === selectedId);
+        const step = event.key === 'ArrowUp' ? -1 : 1;
+        const next = sidebarOrder[(index + step + sidebarOrder.length) % sidebarOrder.length];
+        if (next) onSelect(next.id);
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [cycleAttention]);
+  }, [cycleAttention, sidebarOrder, selectedId, onSelect]);
 
   // Escape closes whichever transient surface is open. Registered on `keyup` in
   // the bubble phase so it cannot swallow the Escape the terminal needs — the

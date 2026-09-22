@@ -5,7 +5,7 @@ import { useTerminal, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal
 import { Search } from 'lucide-react';
 
 import { cn } from '../lib/cn';
-import { isPrimaryModifier } from '../lib/keys';
+import { isAppShortcut } from '../lib/keys';
 import { formatPrompt } from '../lib/prompt';
 import { TerminalSearch } from './terminal-search';
 
@@ -159,7 +159,7 @@ export function TerminalView({
   useEffect(() => {
     if (!sessionId || !active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!isPrimaryModifier(event) || event.altKey || event.key.toLowerCase() !== 'f') return;
+      if (!isAppShortcut(event) || event.key.toLowerCase() !== 'f') return;
       event.preventDefault();
       setSearchOpen(true);
     };
