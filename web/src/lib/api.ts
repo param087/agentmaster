@@ -1,4 +1,11 @@
-import type { GitStatusResponse, HarnessInfo, NotifyPrefs, Session, StatusEvent } from './types';
+import type {
+  GeneralSettings,
+  GitStatusResponse,
+  HarnessInfo,
+  NotifyPrefs,
+  Session,
+  StatusEvent,
+} from './types';
 
 /** A non-2xx response from the server, carrying its status and `{error}` message. */
 export class ApiError extends Error {
@@ -116,6 +123,20 @@ export const api = {
 
   gitDiff(id: string, path: string): Promise<{ diff: string; truncated: boolean }> {
     return request(`/sessions/${encodeURIComponent(id)}/git/diff?path=${encodeURIComponent(path)}`);
+  },
+
+  async generalSettings(): Promise<GeneralSettings> {
+    const { settings } = await request<{ settings: GeneralSettings }>('/settings');
+    return settings;
+  },
+
+  async saveGeneralSettings(settings: GeneralSettings): Promise<GeneralSettings> {
+    const { settings: saved } = await request<{ settings: GeneralSettings }>('/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    return saved;
   },
 
   async notifyPrefs(): Promise<NotifyPrefs> {

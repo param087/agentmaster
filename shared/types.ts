@@ -125,3 +125,9 @@ export interface GitStatusResponse {
   behind: number;
   files: { path: string; code: string }[];
 }
+
+/** `GET/PUT /api/settings`: server-wide preferences that are not notification rules. */
+export interface GeneralSettings {
+  /** Forget stopped sessions this long after they stopped; `null` keeps them forever. */
+  pruneAfterHours: number | null;
+}

@@ -7,6 +7,7 @@ import { NOTIFY_KINDS } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
 import { HarnessSettings } from './harness-settings';
 import { PhoneRules } from './phone-rules';
+import { Housekeeping } from './housekeeping';
 
 const BUTTON =
   'self-start rounded-md border border-base-700 bg-base-800 px-3 py-1.5 text-[12px] text-base-100 ' +
@@ -314,6 +315,8 @@ export function SettingsDialog({
         <PhoneRules />
 
         <HarnessSettings />
+
+        <Housekeeping />
 
         <div className="flex justify-end">
           <button

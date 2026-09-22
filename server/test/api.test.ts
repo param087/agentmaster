@@ -309,6 +309,23 @@ describe('/api/notify-prefs', () => {
   });
 });
 
+describe('/api/settings', () => {
+  it('saves the prune setting and prunes stopped sessions immediately', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await fetch(`${base}/api/sessions/${session.id}`, { method: 'DELETE' });
+    await waitFor(() => manager!.get(session.id)!.info.status === 'killed');
+    await sleep(50);
+    const res = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pruneAfterHours: 0.00001 }),
+    });
+    expect(res.status).toBe(200);
+    expect(manager!.get(session.id)).toBeUndefined();
+  }, PTY_TIMEOUT);
+});
+
 describe('/api/presets', () => {
   const post = (base: string, path: string, body?: unknown) =>
     fetch(`${base}${path}`, {

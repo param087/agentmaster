@@ -41,3 +41,27 @@ export function notifyRouter(manager: SessionManager): Router {
 
   return router;
 }
+
+const generalBody = z
+  .object({
+    // Up to a year; fractional hours allowed so tests (and the impatient) can use minutes.
+    pruneAfterHours: z.number().positive().max(24 * 365).nullable(),
+  })
+  .strict();
+
+/** Server-wide preferences that are not notification rules. */
+export function settingsRouter(manager: SessionManager): Router {
+  const router = Router();
+  router.get('/', (_req, res) => {
+    res.json({ settings: manager.getGeneralSettings() });
+  });
+  router.put('/', (req, res, next) => {
+    const parsed = generalBody.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return next(httpError(400, issue ? `${issue.path.join('.')}: ${issue.message}` : 'Invalid body'));
+    }
+    res.json({ settings: manager.setGeneralSettings(parsed.data) });
+  });
+  return router;
+}

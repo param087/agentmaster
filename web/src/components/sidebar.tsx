@@ -125,9 +125,9 @@ export function Sidebar({
           <span className="ml-auto tabular-nums text-base-500">{sessions.length}</span>
           {/*
             Stopped sessions are kept on purpose so their output stays readable,
-            so the list only grows. This is the manual escape hatch — nothing is
-            ever pruned automatically, because silently deleting history is worse
-            than a long list.
+            so the list only grows. This is the manual escape hatch; automatic
+            pruning exists but is opt-in (Settings → Housekeeping), because
+            silently deleting history is worse than a long list.
           */}
           {finishedCount > 0 && (
             <button

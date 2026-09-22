@@ -511,7 +511,6 @@ describe('notifications', () => {
 
     const kinds = events.filter((e) => e.t === 'notify').map((e) => (e.t === 'notify' ? e.kind : ''));
     expect(kinds).toEqual(['waiting', 'done', 'waiting']);
-    clock += 0;
   });
 
   it('includes the exit code in an error notification', () => {
@@ -710,6 +709,27 @@ describe('web push', () => {
     expect(events.some((e) => e.t === 'notify')).toBe(true);
     expect(db!.listEvents(info.id).map((e) => e.status)).toContain('waiting_input');
     stderr.mockRestore();
+  });
+});
+
+describe('pruneStale', () => {
+  it('forgets only stopped sessions older than the setting', () => {
+    const clock = 1_000_000_000;
+    const m = newManager(bashHarness(), { now: () => clock });
+    const old = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const recent = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const running = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    old.info.status = 'exited';
+    old.info.statusChangedAt = clock - 3 * 3_600_000;
+    recent.info.status = 'killed';
+    recent.info.statusChangedAt = clock - 30 * 60_000;
+    running.info.statusChangedAt = clock - 100 * 3_600_000;
+
+    expect(m.pruneStale()).toBe(0); // off by default
+    m.setGeneralSettings({ pruneAfterHours: 1 });
+    expect(m.get(old.id)).toBeUndefined();
+    expect(m.get(recent.id)).toBeDefined();
+    expect(m.get(running.id)).toBeDefined();
   });
 });
 

@@ -9,6 +9,7 @@ import type { StatusSnapshot } from '../status/engine.js';
 import {
   isTerminalStatus,
   type NotifyKind,
+  type GeneralSettings,
   type NotifyPrefs,
   type Session,
 } from '../status/types.js';
@@ -36,6 +37,10 @@ const NOTIFY_COOLDOWN_MS = 30_000;
 const DEFAULT_PUSH_KINDS: readonly NotifyKind[] = ['waiting', 'error'];
 
 const NOTIFY_PREFS_KEY = 'notify';
+const GENERAL_SETTINGS_KEY = 'general';
+/** How often stopped sessions are checked against the prune setting. */
+const PRUNE_INTERVAL_MS = 5 * 60_000;
+const HOUR_MS = 3_600_000;
 /** Coalesces the git re-read after a burst of status changes. */
 const GIT_REFRESH_DEBOUNCE_MS = 750;
 /** Browsers render at most two notification buttons. */
@@ -128,6 +133,7 @@ export class SessionManager {
     this.killAll();
   };
   private processHandlersInstalled = false;
+  private readonly pruneTimer: NodeJS.Timeout;
   private disposed = false;
 
   constructor(db?: Db, opts: SessionManagerOptions = {}) {
@@ -142,6 +148,9 @@ export class SessionManager {
     // Any row still open belongs to a process from a previous run: sessions are
     // killed on server restart, so the record must say so too.
     this.db.closeOrphanedSessions();
+
+    this.pruneTimer = setInterval(() => this.pruneStale(), PRUNE_INTERVAL_MS);
+    this.pruneTimer.unref?.();
 
     if (opts.installProcessHandlers !== false) {
       process.on('exit', this.onProcessExit);
@@ -315,6 +324,7 @@ export class SessionManager {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    clearInterval(this.pruneTimer);
     this.killAll();
     if (this.processHandlersInstalled) {
       process.off('exit', this.onProcessExit);
@@ -355,6 +365,32 @@ export class SessionManager {
     }, delayMs);
     timer.unref?.();
     this.gitTimers.set(session.id, timer);
+  }
+
+  getGeneralSettings(): GeneralSettings {
+    const stored = this.db.getSetting<Partial<GeneralSettings>>(GENERAL_SETTINGS_KEY);
+    return { pruneAfterHours: stored?.pruneAfterHours ?? null };
+  }
+
+  setGeneralSettings(settings: GeneralSettings): GeneralSettings {
+    this.db.setSetting(GENERAL_SETTINGS_KEY, settings);
+    this.pruneStale();
+    return this.getGeneralSettings();
+  }
+
+  /**
+   * Forgets sessions that stopped longer ago than the prune setting. Running
+   * sessions are never touched, however old. Returns how many were removed.
+   */
+  pruneStale(now = this.now()): number {
+    const { pruneAfterHours } = this.getGeneralSettings();
+    if (pruneAfterHours === null) return 0;
+    const cutoff = now - pruneAfterHours * HOUR_MS;
+    const stale = [...this.map.values()].filter(
+      (s) => isTerminalStatus(s.info.status) && s.info.statusChangedAt < cutoff,
+    );
+    for (const session of stale) this.remove(session.id);
+    return stale.length;
   }
 
   /** Rules as stored, falling back to AGENTMASTER_PUSH_KINDS for a fresh install. */

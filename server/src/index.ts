@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DEFAULT_HARNESSES_PATH, loadHarnesses, watchHarnesses } from './config/harnesses.js';
 import { fsRouter } from './routes/fs.js';
 import { harnessesRouter } from './routes/harnesses.js';
-import { notifyRouter } from './routes/notify.js';
+import { notifyRouter, settingsRouter } from './routes/notify.js';
 import { presetsRouter } from './routes/presets.js';
 import { pushRouter } from './routes/push.js';
 import { sessionsRouter } from './routes/sessions.js';
@@ -63,6 +63,7 @@ export function createServer(opts: CreateServerOptions = {}): AppServer {
   app.use('/api/sessions', sessionsRouter(manager));
   app.use('/api/presets', presetsRouter(manager));
   app.use('/api/notify-prefs', notifyRouter(manager));
+  app.use('/api/settings', settingsRouter(manager));
   app.use('/api/fs', fsRouter());
   app.use('/api/push', pushRouter(manager.database));
   app.use('/api', (_req, res) => {
