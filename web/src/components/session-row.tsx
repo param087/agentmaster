@@ -1,4 +1,4 @@
-import { AlertTriangle, Pin } from 'lucide-react';
+import { AlertTriangle, BellOff, Pin } from 'lucide-react';
 
 import type { Session, WaitKind } from '../lib/types';
 import { isModalWait } from '../lib/types';
@@ -128,6 +128,8 @@ export function SessionRow({
           )}
         </span>
       </span>
+
+      {session.muted && <BellOff aria-label="Muted" className="size-3 shrink-0 text-base-500" />}
 
       {session.pinned && !modal && (
         <Pin aria-label="Pinned" className="size-3 shrink-0 text-base-500" />

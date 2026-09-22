@@ -627,6 +627,66 @@ describe('web push', () => {
     expect(events.filter((e) => e.t === 'notify')).toHaveLength(2);
   });
 
+  it('stored rules override the env default for push kinds', () => {
+    const m = newManager();
+    m.setNotifyPrefs({ pushKinds: ['done'], quietHours: null, mutedHarnesses: [] });
+    const a = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    const b = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    a.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    b.emit('status', { status: 'done', at: 0 });
+    expect(pushes.map((p) => p.kind)).toEqual(['done']);
+  });
+
+  it('a muted session or harness is silent on desktop and phone alike', () => {
+    const m = newManager();
+    const events = collectEvents();
+    const muted = m.create({ harnessId: 'test-bash', cwd: tmpdir() });
+    m.update(muted.id, { muted: true });
+    m.get(muted.id)!.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    expect(pushes).toEqual([]);
+    expect(events.filter((e) => e.t === 'notify')).toEqual([]);
+
+    m.setNotifyPrefs({ pushKinds: ['waiting'], quietHours: null, mutedHarnesses: ['test-bash'] });
+    const other = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    other.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    expect(pushes).toEqual([]);
+  });
+
+  it('quiet hours hold back the phone but not the desktop', () => {
+    const m = newManager();
+    const events = collectEvents();
+    // A window covering the whole day except one minute that has already passed.
+    const now = new Date();
+    const hh = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const later = new Date(now.getTime() + 2 * 60_000);
+    m.setNotifyPrefs({ pushKinds: ['waiting'], quietHours: { start: hh(now), end: hh(later) }, mutedHarnesses: [] });
+    const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    s.emit('status', { status: 'waiting_input', waitKind: 'permission', at: 0 });
+    expect(pushes).toEqual([]);
+    expect(events.filter((e) => e.t === 'notify')).toHaveLength(1);
+  });
+
+  it('adds the screen preview to the body and quick actions as buttons', () => {
+    const m = newManager();
+    const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;
+    s.emit('status', {
+      status: 'waiting_input',
+      waitKind: 'permission',
+      preview: 'Edit src/a.ts\n\nDo you want to proceed?\n❯ 1. Yes',
+      actions: [
+        { label: 'Yes', keys: '1' },
+        { label: 'Always', keys: '2' },
+        { label: 'No', keys: '3' },
+      ],
+      at: 0,
+    });
+    expect(pushes[0]!.body).toMatch(/\nDo you want to proceed\?\n❯ 1\. Yes$/);
+    expect(pushes[0]!.actions).toEqual([
+      { label: 'Yes', keys: '1' },
+      { label: 'Always', keys: '2' },
+    ]);
+  });
+
   it('does not push for a killed session', () => {
     const m = newManager();
     const s = m.get(m.create({ harnessId: 'test-bash', cwd: tmpdir() }).id)!;

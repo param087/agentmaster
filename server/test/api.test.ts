@@ -229,6 +229,27 @@ describe('GET /api/sessions/:id/events', () => {
   }, PTY_TIMEOUT);
 });
 
+describe('/api/notify-prefs', () => {
+  const put = (base: string, body: unknown) =>
+    fetch(`${base}/api/notify-prefs`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('round-trips rules and rejects malformed times', async () => {
+    const base = await boot();
+    const prefs = { pushKinds: ['waiting', 'waiting'], quietHours: { start: '22:00', end: '07:30' }, mutedHarnesses: ['aider'] };
+    const res = await put(base, prefs);
+    expect(res.status).toBe(200);
+    const saved = (await (await fetch(`${base}/api/notify-prefs`)).json()) as { prefs: unknown };
+    expect(saved.prefs).toEqual({ ...prefs, pushKinds: ['waiting'] });
+
+    expect((await put(base, { ...prefs, quietHours: { start: '25:00', end: '07:00' } })).status).toBe(400);
+    expect((await put(base, { ...prefs, pushKinds: ['nope'] })).status).toBe(400);
+  });
+});
+
 describe('/api/presets', () => {
   const post = (base: string, path: string, body?: unknown) =>
     fetch(`${base}${path}`, {

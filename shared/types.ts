@@ -37,6 +37,8 @@ export interface Session {
   title: string;
   /** Kept at the top of the sidebar. */
   pinned?: boolean;
+  /** No notifications of any kind for this session. */
+  muted?: boolean;
   status: SessionStatus;
   waitKind?: WaitKind;
   actions?: QuickAction[];
@@ -59,7 +61,7 @@ export type ServerEvent =
   | {
       t: 'notify';
       id: string;
-      kind: 'waiting' | 'done' | 'exited' | 'killed' | 'error';
+      kind: NotifyKind;
       title: string;
       body: string;
     };
@@ -82,4 +84,25 @@ export interface StatusEvent {
   at: number;
   status: SessionStatus;
   waitKind: WaitKind | null;
+}
+
+export type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
+
+/** Local wall-clock window, `HH:MM`. `start > end` wraps past midnight. */
+export interface QuietHours {
+  start: string;
+  end: string;
+}
+
+/**
+ * Server-side notification rules, shared by every device.
+ *
+ * `pushKinds` and `quietHours` govern the *phone* (Web Push) only; desktop
+ * alerts are in-context and keep their own per-browser mute. A muted harness or
+ * session is silent everywhere.
+ */
+export interface NotifyPrefs {
+  pushKinds: NotifyKind[];
+  quietHours: QuietHours | null;
+  mutedHarnesses: string[];
 }

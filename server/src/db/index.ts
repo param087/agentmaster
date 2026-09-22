@@ -14,12 +14,14 @@ export interface SessionRow {
   exitedAt: number | null;
   exitCode: number | null;
   pinned: boolean;
+  muted: boolean;
 }
 
 /** The fields a user may edit on an existing session. */
 export interface SessionMetaPatch {
   title?: string;
   pinned?: boolean;
+  muted?: boolean;
 }
 
 export interface EventRow {
@@ -57,7 +59,7 @@ export interface PushSubscriptionInput {
 }
 
 export interface Db {
-  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned'>): void;
+  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned' | 'muted'>): void;
   updateSessionMeta(id: string, patch: SessionMetaPatch): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
   /**
@@ -93,6 +95,10 @@ export interface Db {
   getHarnessPrefs(): Map<string, boolean>;
   setHarnessEnabled(harnessId: string, enabled: boolean, at?: number): void;
 
+  /** JSON-valued preference, or `undefined` when never set or unparseable. */
+  getSetting<T>(key: string): T | undefined;
+  setSetting(key: string, value: unknown, at?: number): void;
+
   insertPreset(row: PresetRow): void;
   listPresets(): PresetRow[];
   getPreset(id: string): PresetRow | undefined;
@@ -115,6 +121,7 @@ interface SessionRecord {
   exited_at: number | null;
   exit_code: number | null;
   pinned: number;
+  muted: number;
 }
 
 interface EventRecord {
@@ -161,6 +168,7 @@ function toSessionRow(r: SessionRecord): SessionRow {
     exitedAt: r.exited_at,
     exitCode: r.exit_code,
     pinned: r.pinned === 1,
+    muted: r.muted === 1,
   };
 }
 
@@ -257,6 +265,12 @@ export function openDb(path?: string): Db {
     ),
     updateTitle: sqlite.prepare(`UPDATE sessions SET title = ? WHERE id = ?`),
     updatePinned: sqlite.prepare(`UPDATE sessions SET pinned = ? WHERE id = ?`),
+    updateMuted: sqlite.prepare(`UPDATE sessions SET muted = ? WHERE id = ?`),
+    getSetting: sqlite.prepare(`SELECT value FROM settings WHERE key = ?`),
+    setSetting: sqlite.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    ),
     reopenSession: sqlite.prepare(
       `UPDATE sessions SET exited_at = NULL, exit_code = NULL WHERE id = ?`,
     ),
@@ -322,6 +336,7 @@ export function openDb(path?: string): Db {
       const apply = sqlite.transaction(() => {
         if (patch.title !== undefined) stmts.updateTitle.run(patch.title, id);
         if (patch.pinned !== undefined) stmts.updatePinned.run(patch.pinned ? 1 : 0, id);
+        if (patch.muted !== undefined) stmts.updateMuted.run(patch.muted ? 1 : 0, id);
       });
       apply();
     },
@@ -374,6 +389,18 @@ export function openDb(path?: string): Db {
     },
     setHarnessEnabled(harnessId, enabled, at = Date.now()) {
       stmts.setHarnessPref.run(harnessId, enabled ? 1 : 0, at);
+    },
+    getSetting<T>(key: string): T | undefined {
+      const row = stmts.getSetting.get(key) as { value: string } | undefined;
+      if (!row) return undefined;
+      try {
+        return JSON.parse(row.value) as T;
+      } catch {
+        return undefined;
+      }
+    },
+    setSetting(key, value, at = Date.now()) {
+      stmts.setSetting.run(key, JSON.stringify(value), at);
     },
     insertPreset(row) {
       stmts.insertPreset.run(row);

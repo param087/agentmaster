@@ -27,10 +27,11 @@ const patchBody = z
   .object({
     title: z.string().trim().min(1).max(MAX_TITLE_LENGTH).optional(),
     pinned: z.boolean().optional(),
+    muted: z.boolean().optional(),
   })
   .strict()
-  .refine((body) => body.title !== undefined || body.pinned !== undefined, {
-    message: 'Nothing to update: send title and/or pinned',
+  .refine((body) => Object.values(body).some((value) => value !== undefined), {
+    message: 'Nothing to update: send title, pinned and/or muted',
   });
 
 const inputBody = z.object({

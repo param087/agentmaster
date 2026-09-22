@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   BellOff,
   Maximize2,
   Menu,
@@ -376,6 +377,22 @@ export function AppShell({
     </button>
   );
 
+  const muteButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        runAction(api.updateSession(selected.id, { muted: !selected.muted }).then(() => undefined));
+      }}
+      aria-pressed={selected.muted === true}
+      title={selected.muted ? 'Notify about this session again' : 'No notifications from this session'}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      {selected.muted ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
+      {selected.muted ? 'Unmute' : 'Mute'}
+    </button>
+  );
+
   const pinButton = selected && (
     <button
       type="button"
@@ -567,6 +584,7 @@ export function AppShell({
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
                         {timelineButton}
+                        {muteButton}
                         {pinButton}
                         {fitButton}
                         {isTerminalStatus(selected.status) ? restartButton : killButton}
@@ -578,6 +596,7 @@ export function AppShell({
               ) : (
                 <>
                   {timelineButton}
+                  {muteButton}
                   {pinButton}
                   {fitButton}
                   {isTerminalStatus(selected.status) ? restartButton : killButton}

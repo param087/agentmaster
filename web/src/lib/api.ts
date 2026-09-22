@@ -1,4 +1,4 @@
-import type { HarnessInfo, Session, StatusEvent } from './types';
+import type { HarnessInfo, NotifyPrefs, Session, StatusEvent } from './types';
 
 /** A non-2xx response from the server, carrying its status and `{error}` message. */
 export class ApiError extends Error {
@@ -110,6 +110,20 @@ export const api = {
     return session;
   },
 
+  async notifyPrefs(): Promise<NotifyPrefs> {
+    const { prefs } = await request<{ prefs: NotifyPrefs }>('/notify-prefs');
+    return prefs;
+  },
+
+  async saveNotifyPrefs(prefs: NotifyPrefs): Promise<NotifyPrefs> {
+    const { prefs: saved } = await request<{ prefs: NotifyPrefs }>('/notify-prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(prefs),
+    });
+    return saved;
+  },
+
   async sessionEvents(id: string): Promise<StatusEvent[]> {
     const { events } = await request<{ events: StatusEvent[] }>(
       `/sessions/${encodeURIComponent(id)}/events`,
@@ -118,7 +132,10 @@ export const api = {
   },
 
   /** Renames and/or pins a session. */
-  async updateSession(id: string, patch: { title?: string; pinned?: boolean }): Promise<Session> {
+  async updateSession(
+    id: string,
+    patch: { title?: string; pinned?: boolean; muted?: boolean },
+  ): Promise<Session> {
     const { session } = await request<{ session: Session }>(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },

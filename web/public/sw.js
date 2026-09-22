@@ -42,10 +42,16 @@ function readPayload(event) {
   try {
     const data = event.data.json();
     if (!data || typeof data !== 'object') return FALLBACK;
+    const actions = Array.isArray(data.actions)
+      ? data.actions
+          .filter((a) => a && typeof a.label === 'string' && typeof a.keys === 'string')
+          .slice(0, 2)
+      : [];
     return {
       id: typeof data.id === 'string' && data.id ? data.id : FALLBACK.id,
       title: typeof data.title === 'string' && data.title ? data.title : FALLBACK.title,
       body: typeof data.body === 'string' ? data.body : FALLBACK.body,
+      actions: actions,
     };
   } catch {
     return FALLBACK;
@@ -60,7 +66,10 @@ self.addEventListener('push', (event) => {
       // Coalesce by session: a session that keeps re-entering "waiting" should
       // replace its own alert, not stack twenty of them in Notification Centre.
       tag: payload.id,
-      data: { id: payload.id },
+      // Buttons answer a prompt without opening the app. The keys ride along
+      // in `data`, indexed by action id, because `actions` only carries labels.
+      actions: (payload.actions || []).map((a, i) => ({ action: String(i), title: a.label })),
+      data: { id: payload.id, keys: (payload.actions || []).map((a) => a.keys) },
       icon: '/icon-192.png',
       badge: '/icon-192.png',
     }),
@@ -69,7 +78,27 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const id = (event.notification.data && event.notification.data.id) || '';
+  const data = event.notification.data || {};
+  const id = data.id || '';
+
+  // A button: type its keys into the session and stay out of the way. Falls
+  // through to opening the app if delivery fails, so the prompt is not lost.
+  if (event.action !== '' && Array.isArray(data.keys)) {
+    const keys = data.keys[Number(event.action)];
+    if (typeof keys === 'string' && id) {
+      event.waitUntil(
+        fetch('/api/sessions/' + encodeURIComponent(id) + '/input', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ keys: keys }),
+        }).then((res) => {
+          if (!res.ok) return self.clients.openWindow('/?session=' + encodeURIComponent(id));
+          return undefined;
+        }, () => self.clients.openWindow('/?session=' + encodeURIComponent(id))),
+      );
+      return;
+    }
+  }
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {

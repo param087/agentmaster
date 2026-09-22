@@ -33,8 +33,8 @@ describe('migrations', () => {
     return v;
   }
 
-  // Bumped deliberately with each migration. 005 adds presets.
-  const LATEST_SCHEMA = 5;
+  // Bumped deliberately with each migration. 006 adds settings + sessions.muted.
+  const LATEST_SCHEMA = 6;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
@@ -126,6 +126,7 @@ describe('sessions', () => {
       exitedAt: null,
       exitCode: null,
       pinned: false,
+      muted: false,
     });
   });
 
@@ -225,6 +226,15 @@ describe('updateSessionMeta', () => {
     expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: false });
     db.updateSessionMeta('m', { pinned: true });
     expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: true });
+  });
+});
+
+describe('settings', () => {
+  it('round-trips JSON values and overwrites', () => {
+    expect(db.getSetting('k')).toBeUndefined();
+    db.setSetting('k', { a: 1 });
+    db.setSetting('k', { a: 2, b: [true] });
+    expect(db.getSetting('k')).toEqual({ a: 2, b: [true] });
   });
 });
 

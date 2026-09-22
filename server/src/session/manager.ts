@@ -6,14 +6,19 @@ import { getHarness, loadHarnesses, type Harness } from '../config/harnesses.js'
 import { openDb, type Db, type SessionMetaPatch } from '../db/index.js';
 import { sendPush, type PushPayload } from '../push/sender.js';
 import type { StatusSnapshot } from '../status/engine.js';
-import { isTerminalStatus, type Session } from '../status/types.js';
+import {
+  isTerminalStatus,
+  type NotifyKind,
+  type NotifyPrefs,
+  type Session,
+} from '../status/types.js';
+import { isMuted, shouldPush } from '../notify/policy.js';
 import { PtySession } from './session.js';
 import { formatPrompt } from '../../../shared/prompt.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
 const NOTIFY_COOLDOWN_MS = 30_000;
 
-type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
 
 /**
  * Kinds that are worth a *phone* buzz by default.
@@ -28,6 +33,13 @@ type NotifyKind = 'waiting' | 'done' | 'exited' | 'killed' | 'error';
  * Override with AGENTMASTER_PUSH_KINDS="waiting,error,done".
  */
 const DEFAULT_PUSH_KINDS: readonly NotifyKind[] = ['waiting', 'error'];
+
+const NOTIFY_PREFS_KEY = 'notify';
+/** Browsers render at most two notification buttons. */
+const MAX_NOTIFICATION_ACTIONS = 2;
+/** Preview lines appended to a waiting notification, so it reads without opening. */
+const NOTIFICATION_PREVIEW_LINES = 2;
+const NOTIFICATION_PREVIEW_CHARS = 160;
 
 const ALL_NOTIFY_KINDS: readonly NotifyKind[] = [
   'waiting',
@@ -224,10 +236,12 @@ export class SessionManager {
     const clean: SessionMetaPatch = {};
     if (patch.title !== undefined) clean.title = patch.title.trim();
     if (patch.pinned !== undefined) clean.pinned = patch.pinned;
+    if (patch.muted !== undefined) clean.muted = patch.muted;
 
     this.db.updateSessionMeta(id, clean);
     if (clean.title !== undefined) session.info.title = clean.title;
     if (clean.pinned !== undefined) session.info.pinned = clean.pinned;
+    if (clean.muted !== undefined) session.info.muted = clean.muted;
     emitServerEvent({ t: 'session:updated', session: session.info });
     return session.info;
   }
@@ -309,9 +323,32 @@ export class SessionManager {
     this.maybeNotify(session, snapshot);
   }
 
+  /** Rules as stored, falling back to AGENTMASTER_PUSH_KINDS for a fresh install. */
+  getNotifyPrefs(): NotifyPrefs {
+    const stored = this.db.getSetting<Partial<NotifyPrefs>>(NOTIFY_PREFS_KEY);
+    return {
+      pushKinds: stored?.pushKinds ?? [...this.pushKinds],
+      quietHours: stored?.quietHours ?? null,
+      mutedHarnesses: stored?.mutedHarnesses ?? [],
+    };
+  }
+
+  setNotifyPrefs(prefs: NotifyPrefs): NotifyPrefs {
+    this.db.setSetting(NOTIFY_PREFS_KEY, prefs);
+    return this.getNotifyPrefs();
+  }
+
   private maybeNotify(session: PtySession, snapshot: StatusSnapshot): void {
     const decision = describeNotification(session, snapshot);
     if (!decision) return;
+
+    const prefs = this.getNotifyPrefs();
+    const ctx = {
+      kind: decision.kind,
+      harnessId: session.info.harnessId,
+      sessionMuted: session.info.muted === true,
+    };
+    if (isMuted(prefs, ctx)) return;
 
     const key = `${session.id}:${decision.kind}`;
     const last = this.lastNotified.get(key);
@@ -325,8 +362,11 @@ export class SessionManager {
     // a second policy would let desktop and phone disagree about what is worth
     // interrupting for; the only difference allowed is which kinds reach the
     // phone at all.
-    if (this.pushKinds.has(decision.kind)) {
-      void this.push(this.db, { id: session.id, ...decision }).catch((error: unknown) => {
+    if (shouldPush(prefs, ctx, new Date(at))) {
+      const actions = snapshot.actions?.slice(0, MAX_NOTIFICATION_ACTIONS);
+      const payload: PushPayload = { id: session.id, ...decision };
+      if (actions && actions.length > 0) payload.actions = actions;
+      void this.push(this.db, payload).catch((error: unknown) => {
         process.stderr.write(
           `[push] send rejected: ${error instanceof Error ? error.message : String(error)}\n`,
         );
@@ -347,7 +387,29 @@ interface NotifyDecision {
   body: string;
 }
 
+/** The last non-empty screen lines, clipped: what the harness is asking. */
+function previewSnippet(preview: string | undefined): string | undefined {
+  if (!preview) return undefined;
+  const lines = preview
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const tail = lines.slice(-NOTIFICATION_PREVIEW_LINES).join('\n');
+  if (tail === '') return undefined;
+  return tail.length > NOTIFICATION_PREVIEW_CHARS ? `${tail.slice(0, NOTIFICATION_PREVIEW_CHARS - 1)}…` : tail;
+}
+
 function describeNotification(
+  session: PtySession,
+  snapshot: StatusSnapshot,
+): NotifyDecision | undefined {
+  const decision = baseNotification(session, snapshot);
+  if (!decision || decision.kind !== 'waiting') return decision;
+  const snippet = previewSnippet(snapshot.preview);
+  return snippet ? { ...decision, body: `${decision.body}\n${snippet}` } : decision;
+}
+
+function baseNotification(
   session: PtySession,
   snapshot: StatusSnapshot,
 ): NotifyDecision | undefined {
