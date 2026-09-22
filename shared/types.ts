@@ -44,6 +44,8 @@ export interface Session {
   matchedRule?: string;
   pid?: number;
   exitCode?: number;
+  /** Rendered screen tail captured when the session started waiting or finished. */
+  preview?: string;
   createdAt: number;
   statusChangedAt: number;
   busySince?: number;

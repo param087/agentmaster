@@ -1,7 +1,15 @@
 # Registry for the e2e suite only: a plain shell, so tests drive a real PTY
-# without needing any AI CLI installed.
+# without needing any AI CLI installed. The waiting rule lets a test put a
+# session into `waiting_input` on demand by printing the marker.
 harnesses:
   - id: bash
     name: Bash
     command: /bin/bash
     args: ["--norc", "--noprofile", "-i"]
+    idle_ms: 800
+    waiting_input:
+      - match: "Proceed\\? \\[y/n\\]"
+        kind: permission
+        actions:
+          - { label: "Yes", keys: "y\r" }
+          - { label: "No", keys: "n\r" }

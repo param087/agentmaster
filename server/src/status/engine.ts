@@ -23,6 +23,21 @@ const MIN_TURN_OUTPUT_MS = 500;
 const LEAVE_WAITING_DELAY_MS = 1000;
 
 const DEFAULT_TAIL_LINES = 30;
+/** Lines of screen kept as a preview when a session stops to wait for you. */
+export const PREVIEW_LINES = 14;
+/** Statuses where a preview helps decide without opening the session. */
+const PREVIEW_STATUSES: ReadonlySet<SessionStatus> = new Set(['waiting_input', 'done']);
+
+/**
+ * Trims a screen tail to something worth reading in a sidebar: right-trimmed
+ * rows, runs of blank rows collapsed, box-drawing borders kept as-is.
+ */
+export function toPreview(tail: string): string | undefined {
+  const lines = tail.split('\n').map((line) => line.trimEnd());
+  const collapsed = lines.filter((line, i) => line !== '' || (i > 0 && lines[i - 1] !== ''));
+  const text = collapsed.join('\n').trim();
+  return text === '' ? undefined : text;
+}
 
 export interface StatusSnapshot {
   status: SessionStatus;
@@ -31,6 +46,8 @@ export interface StatusSnapshot {
   /** Source text of the waiting rule that fired. Only set on `waiting_input`. */
   matchedRule?: string;
   exitCode?: number;
+  /** Rendered screen tail, on `waiting_input` / `done` only. */
+  preview?: string;
   /** Timestamp of the transition. */
   at: number;
 }
@@ -337,7 +354,12 @@ export class StatusEngine extends EventEmitter {
     ) {
       return;
     }
-    this.snapshot = { ...next, at: this.now() };
+    const snapshot: StatusSnapshot = { ...next, at: this.now() };
+    if (PREVIEW_STATUSES.has(next.status) && !this.disposed) {
+      const preview = toPreview(this.screen.tail(PREVIEW_LINES));
+      if (preview !== undefined) snapshot.preview = preview;
+    }
+    this.snapshot = snapshot;
     this.emit('status', this.snapshot);
   }
 }

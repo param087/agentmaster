@@ -132,6 +132,22 @@ describe('StatusEngine', () => {
     expect(seen.map((s) => s.status)).toEqual(['busy', 'waiting_input']);
   });
 
+  it('captures the rendered screen tail as a preview when it starts waiting', async () => {
+    const { engine: e, clock } = makeEngine();
+    await e.onData('reading src/a.ts\r\n\r\n\r\nDo you want to proceed?\r\n❯ 1. Yes\r\n');
+    clock.advance(2500);
+    expect(e.current.preview).toBe('reading src/a.ts\n\nDo you want to proceed?\n❯ 1. Yes');
+  });
+
+  it('attaches no preview to busy or idle snapshots', async () => {
+    const { engine: e, clock } = makeEngine();
+    await e.onData('log line\r\n');
+    expect(e.current.preview).toBeUndefined();
+    clock.advance(2500);
+    expect(e.current.status).toBe('idle');
+    expect(e.current.preview).toBeUndefined();
+  });
+
   it('transitions to idle when no rule matches and the busy stretch was short', async () => {
     const { engine: e, clock } = makeEngine();
     await e.onData('just some log output\r\n');

@@ -217,6 +217,7 @@ export class PtySession extends EventEmitter {
     delete this.info.waitKind;
     delete this.info.actions;
     delete this.info.matchedRule;
+    delete this.info.preview;
     delete this.info.busySince;
     this.info.status = 'starting';
     this.info.pid = this.pty.pid;
@@ -455,6 +456,7 @@ export class PtySession extends EventEmitter {
     this.info.waitKind = snapshot.waitKind;
     this.info.actions = snapshot.actions;
     this.info.matchedRule = snapshot.matchedRule;
+    this.info.preview = snapshot.preview;
     this.info.statusChangedAt = snapshot.at;
     if (snapshot.status === 'busy') {
       this.info.busySince ??= snapshot.at;
