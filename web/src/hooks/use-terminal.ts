@@ -87,6 +87,8 @@ export interface UseTerminalResult {
   scrollToBottom: () => void;
   /** False while the user is looking at scrollback. Always true on the alt screen. */
   atBottom: boolean;
+  /** Whether the program in the PTY has enabled bracketed paste (DECSET 2004). */
+  bracketedPaste: () => boolean;
   /** Finds `query` in the scrollback; returns false when there is no match. */
   search: (query: string, direction: 'next' | 'previous', options?: SearchOptions) => boolean;
   clearSearch: () => void;
@@ -521,6 +523,11 @@ export function useTerminal(
     [],
   );
 
+  const bracketedPaste = useCallback(
+    (): boolean => termRef.current?.modes.bracketedPasteMode ?? false,
+    [],
+  );
+
   const clearSearch = useCallback((): void => {
     searchRef.current?.clearDecorations();
     termRef.current?.clearSelection();
@@ -528,6 +535,7 @@ export function useTerminal(
   }, []);
 
   return {
+    bracketedPaste,
     search,
     clearSearch,
     searchResults,

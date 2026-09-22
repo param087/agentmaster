@@ -6,6 +6,7 @@ import { Search } from 'lucide-react';
 
 import { cn } from '../lib/cn';
 import { isPrimaryModifier } from '../lib/keys';
+import { formatPrompt } from '../lib/prompt';
 import { TerminalSearch } from './terminal-search';
 
 /** Reads the rendered pixel size of the xterm screen, or zeros before first paint. */
@@ -93,6 +94,8 @@ export interface TerminalViewProps {
    * has painted. Drives the header's "Fit to screen".
    */
   onFitPlanReady?: (plan: (() => TerminalDims | null) | null) => void;
+  /** Receives a prompt sender that honours the program's bracketed-paste mode. */
+  onSendPromptReady?: (send: ((text: string) => void) | null) => void;
 }
 
 export function TerminalView({
@@ -101,6 +104,7 @@ export function TerminalView({
   onSendReady,
   onInputTransformReady,
   onFitPlanReady,
+  onSendPromptReady,
 }: TerminalViewProps) {
   const {
     containerRef,
@@ -114,7 +118,17 @@ export function TerminalView({
     search,
     clearSearch,
     searchResults,
+    bracketedPaste,
   } = useTerminal(sessionId, dims);
+
+  useEffect(() => {
+    if (!connected) {
+      onSendPromptReady?.(null);
+      return;
+    }
+    onSendPromptReady?.((text: string) => send(formatPrompt(text, bracketedPaste())));
+    return () => onSendPromptReady?.(null);
+  }, [connected, send, bracketedPaste, onSendPromptReady]);
   const [searchOpen, setSearchOpen] = useState(false);
 
   const closeSearch = useCallback((): void => {

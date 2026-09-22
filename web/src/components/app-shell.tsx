@@ -24,6 +24,8 @@ import { attentionOrder } from './attention-queue';
 import { KeyBar } from './key-bar';
 import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
+import { PromptComposer } from './prompt-composer';
+import { formatPrompt } from '../lib/prompt';
 import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
 import { EditableTitle } from './editable-title';
@@ -93,6 +95,17 @@ export function AppShell({
     (set: ((transform: ((data: string) => string) | null) => void) | null) => {
       setSetInputTransform(() => set);
     },
+    [],
+  );
+
+  const [sendPrompt, setSendPrompt] = useState<((text: string) => void) | null>(null);
+  const handleSendPromptReady = useCallback((send: ((text: string) => void) | null) => {
+    setSendPrompt(() => send);
+  }, []);
+  // Other sessions' terminal modes are unknown here; every agent CLI we ship
+  // enables bracketed paste, so multi-line broadcasts assume it.
+  const sendToOther = useCallback(
+    (id: string, text: string) => api.sendInput(id, formatPrompt(text, true)),
     [],
   );
 
@@ -569,8 +582,19 @@ export function AppShell({
             onSendReady={handleSendReady}
             onInputTransformReady={handleInputTransformReady}
             onFitPlanReady={handleFitPlanReady}
+            onSendPromptReady={handleSendPromptReady}
           />
         </div>
+
+        {selected && (
+          <PromptComposer
+            key={selected.id}
+            session={selected}
+            sessions={sessions}
+            sendPrompt={sendPrompt}
+            sendToOther={sendToOther}
+          />
+        )}
 
         <QuickActions
           session={selected}
