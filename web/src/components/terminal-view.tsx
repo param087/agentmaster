@@ -6,7 +6,7 @@ import { Search } from 'lucide-react';
 
 import { cn } from '../lib/cn';
 import { isAppShortcut } from '../lib/keys';
-import { formatPrompt } from '../lib/prompt';
+import { sendPrompt } from '../lib/prompt';
 import { TerminalSearch } from './terminal-search';
 
 /** Reads the rendered pixel size of the xterm screen, or zeros before first paint. */
@@ -143,7 +143,7 @@ export function TerminalView({
       onSendPromptReady?.(null);
       return;
     }
-    onSendPromptReady?.((text: string) => send(formatPrompt(text, bracketedPaste())));
+    onSendPromptReady?.((text: string) => void sendPrompt(send, text, bracketedPaste()));
     return () => onSendPromptReady?.(null);
   }, [connected, send, bracketedPaste, onSendPromptReady]);
   const [searchOpen, setSearchOpen] = useState(false);
