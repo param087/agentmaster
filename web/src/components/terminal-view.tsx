@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
-import { useTerminal, type TerminalDims } from '../hooks/use-terminal';
+import { useTerminal, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal';
 import { cn } from '../lib/cn';
 
 /** Reads the rendered pixel size of the xterm screen, or zeros before first paint. */
@@ -24,6 +24,16 @@ const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_SLOP_PX = 24;
 /** Movement under this is a tap, not a drag. */
 const TAP_SLOP_PX = 8;
+
+/** Fallback line height before xterm has painted, so a drag is never a no-op. */
+const FALLBACK_LINE_PX = 16;
+
+/** Per-frame velocity decay for the fling that follows a vertical drag. */
+const MOMENTUM_DECAY = 0.94;
+/** Below this (px/frame) the fling has visually stopped. */
+const MOMENTUM_MIN_PX = 0.4;
+/** A fling longer than this is almost always an accidental flick. */
+const MOMENTUM_MAX_PX = 60;
 
 interface Point {
   x: number;
@@ -88,7 +98,8 @@ export function TerminalView({
   onInputTransformReady,
   onFitPlanReady,
 }: TerminalViewProps) {
-  const { containerRef, connected, error, send, setInputTransform } = useTerminal(sessionId, dims);
+  const { containerRef, connected, error, send, setInputTransform, scrollLines, scrollToBottom, atBottom } =
+    useTerminal(sessionId, dims);
   // Gestures are enabled where the fit-scale is genuinely unreadable: a finger
   // pointer, or a phone-width viewport (which is also what a desktop browser in
   // device-emulation mode reports). A wide desktop window gets neither, so its
@@ -183,7 +194,18 @@ export function TerminalView({
   const resetZoom = useCallback((): void => {
     setUserScale(null);
     setPan({ x: 0, y: 0 });
+    panRef.current = { x: 0, y: 0 };
   }, []);
+
+  /** Height of one terminal row *on screen*, i.e. after the zoom transform. */
+  const lineHeightPx = useCallback((): number => {
+    const container = containerRef.current;
+    if (!container) return FALLBACK_LINE_PX;
+    const { height } = measureTerminal(container);
+    const rows = dims?.rows ?? TERM_ROWS;
+    const cell = height > 0 && rows > 0 ? height / rows : FALLBACK_LINE_PX;
+    return Math.max(4, cell * scaleRef.current);
+  }, [containerRef, dims?.rows]);
 
   // Reports "how big could the PTY be" to the header. Deliberately a function
   // rather than a value: it must be measured at click time, after any rotation
@@ -221,11 +243,62 @@ export function TerminalView({
     startPan: Point;
     anchor: Point;
   } | null>(null);
-  const drag = useRef<{ origin: Point; startPan: Point; moved: boolean } | null>(null);
+  const drag = useRef<{
+    origin: Point;
+    last: Point;
+    moved: boolean;
+    /** Locked in once the slop is broken, so a gesture never changes its mind. */
+    axis: 'none' | 'vertical' | 'horizontal';
+    /** Sub-line remainder, so slow drags still accumulate into whole lines. */
+    scrollRemainder: number;
+    velocity: number;
+  } | null>(null);
   const lastTap = useRef<{ at: number; point: Point } | null>(null);
+  const momentum = useRef<number | null>(null);
+
+  const stopMomentum = useCallback((): void => {
+    if (momentum.current !== null) cancelAnimationFrame(momentum.current);
+    momentum.current = null;
+  }, []);
+
+  useEffect(() => stopMomentum, [stopMomentum, sessionId]);
+
+  const setPanNow = useCallback((next: Point): void => {
+    panRef.current = next;
+    setPan(next);
+  }, []);
+
+  /**
+   * Routes a vertical finger movement: pan first while the zoomed content still
+   * has room to move, then spend whatever is left on the scrollback. Returns the
+   * distance that was actually consumed, which is what the fling decays on.
+   */
+  const applyVerticalDelta = useCallback(
+    (dy: number, state: { scrollRemainder: number }): number => {
+      const before = panRef.current;
+      const panned = clampPan({ x: before.x, y: before.y + dy }, scaleRef.current);
+      const consumed = panned.y - before.y;
+      if (consumed !== 0) setPanNow(panned);
+
+      const leftover = dy - consumed;
+      if (leftover === 0) return consumed;
+
+      state.scrollRemainder += leftover;
+      const step = lineHeightPx();
+      const lines = Math.trunc(state.scrollRemainder / step);
+      if (lines !== 0) {
+        state.scrollRemainder -= lines * step;
+        // Dragging *down* pulls older output into view, i.e. scrolls up.
+        scrollLines(-lines);
+      }
+      return dy;
+    },
+    [clampPan, lineHeightPx, scrollLines, setPanNow],
+  );
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!touch || event.pointerType === 'mouse') return;
+    stopMomentum();
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     const points = [...pointers.current.values()];
@@ -245,7 +318,14 @@ export function TerminalView({
     }
 
     if (points.length === 1 && first) {
-      drag.current = { origin: first, startPan: panRef.current, moved: false };
+      drag.current = {
+        origin: first,
+        last: first,
+        moved: false,
+        axis: 'none',
+        scrollRemainder: 0,
+        velocity: 0,
+      };
     }
   };
 
@@ -272,7 +352,7 @@ export function TerminalView({
         y: active.anchor.y - (active.anchor.y - active.startPan.y) * factor,
       };
       setUserScale(next);
-      setPan(clampPan(nextPan, next));
+      setPanNow(clampPan(nextPan, next));
       return;
     }
 
@@ -280,27 +360,68 @@ export function TerminalView({
     if (points.length === 1 && first && dragging) {
       const dx = first.x - dragging.origin.x;
       const dy = first.y - dragging.origin.y;
-      if (!dragging.moved && Math.hypot(dx, dy) < TAP_SLOP_PX) return;
-      // Only take over the gesture once the content genuinely overflows;
-      // otherwise a one-finger drag stays a selection, exactly as before.
-      const clamped = clampPan(
-        { x: dragging.startPan.x + dx, y: dragging.startPan.y + dy },
-        scaleRef.current,
-      );
-      if (clamped.x === panRef.current.x && clamped.y === panRef.current.y && !dragging.moved) {
+      if (dragging.axis === 'none') {
+        if (Math.hypot(dx, dy) < TAP_SLOP_PX) return;
+        dragging.axis = Math.abs(dy) >= Math.abs(dx) ? 'vertical' : 'horizontal';
+        dragging.moved = true;
+        dragging.last = first;
         return;
       }
-      dragging.moved = true;
-      setPan(clamped);
+
+      const stepX = first.x - dragging.last.x;
+      const stepY = first.y - dragging.last.y;
+      dragging.last = first;
+
+      if (dragging.axis === 'vertical') {
+        dragging.velocity = stepY;
+        applyVerticalDelta(stepY, dragging);
+        return;
+      }
+
+      // Horizontal: pan only. There is nothing to scroll sideways into — the
+      // PTY is exactly `cols` wide — so this is purely about a zoomed viewport.
+      setPanNow(
+        clampPan({ x: panRef.current.x + stepX, y: panRef.current.y }, scaleRef.current),
+      );
     }
   };
 
+  /** Continues a flung vertical drag through the same pan-then-scroll pipeline. */
+  const startMomentum = useCallback(
+    (velocity: number): void => {
+      let current = Math.max(-MOMENTUM_MAX_PX, Math.min(MOMENTUM_MAX_PX, velocity));
+      if (Math.abs(current) < MOMENTUM_MIN_PX) return;
+      const state = { scrollRemainder: 0 };
+      const tick = (): void => {
+        const consumed = applyVerticalDelta(current, state);
+        current *= MOMENTUM_DECAY;
+        if (consumed === 0 || Math.abs(current) < MOMENTUM_MIN_PX) {
+          momentum.current = null;
+          return;
+        }
+        momentum.current = requestAnimationFrame(tick);
+      };
+      momentum.current = requestAnimationFrame(tick);
+    },
+    [applyVerticalDelta],
+  );
+
   const endPointer = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!touch || event.pointerType === 'mouse') return;
-    const wasDragging = drag.current?.moved ?? false;
+    const finished = drag.current;
+    const wasDragging = finished?.moved ?? false;
     pointers.current.delete(event.pointerId);
     if (pointers.current.size < 2) gesture.current = null;
     if (pointers.current.size === 0) drag.current = null;
+
+    if (
+      finished &&
+      finished.axis === 'vertical' &&
+      event.type === 'pointerup' &&
+      pointers.current.size === 0
+    ) {
+      startMomentum(finished.velocity);
+    }
 
     if (wasDragging || event.type === 'pointercancel') {
       lastTap.current = null;
@@ -356,6 +477,23 @@ export function TerminalView({
           className="absolute bottom-3 right-3 z-10 rounded-md border border-base-700 bg-base-850/90 px-2 py-1 text-[11px] text-base-200"
         >
           {Math.round(scale * 100)}% · Reset
+        </button>
+      )}
+
+      {!atBottom && (
+        <button
+          type="button"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            stopMomentum();
+            scrollToBottom();
+          }}
+          className={cn(
+            'absolute z-10 rounded-md border border-base-700 bg-base-850/90 px-2 py-1 text-[11px] text-base-200',
+            zoomed ? 'bottom-3 right-28' : 'bottom-3 right-3',
+          )}
+        >
+          ↓ Live
         </button>
       )}
 

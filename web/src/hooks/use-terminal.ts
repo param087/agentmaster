@@ -75,6 +75,17 @@ export interface UseTerminalResult {
    * Consumed and cleared automatically after one chunk. Pass `null` to cancel.
    */
   setInputTransform: (transform: ((data: string) => string) | null) => void;
+  /**
+   * Scrolls the scrollback by `delta` lines (negative scrolls towards older
+   * output). On the alternate screen there *is* no scrollback — a full-screen
+   * TUI owns the whole grid — so the request is translated into cursor keys,
+   * which is what a native terminal's "alternate scroll mode" does.
+   */
+  scrollLines: (delta: number) => void;
+  /** Jumps back to live output. */
+  scrollToBottom: () => void;
+  /** False while the user is looking at scrollback. Always true on the alt screen. */
+  atBottom: boolean;
 }
 
 /**
@@ -139,9 +150,11 @@ export function useTerminal(
 ): UseTerminalResult {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const termRef = useRef<Terminal | null>(null);
   const inputTransformRef = useRef<((data: string) => string) | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
 
   // Destructured so the effect depends on the numbers, not on the identity of a
   // freshly-built object — otherwise every parent render would tear the
@@ -180,6 +193,21 @@ export function useTerminal(
     });
 
     term.open(container);
+    termRef.current = term;
+
+    // ---- scroll position tracking ----------------------------------------
+    //
+    // Drives the "jump to live" affordance. The alt screen has no scrollback,
+    // so it is always "at the bottom" by definition.
+    const syncAtBottom = (): void => {
+      if (cancelled) return;
+      const buffer = term.buffer.active;
+      setAtBottom(buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY);
+    };
+    const scrollListener = term.onScroll(syncAtBottom);
+    const writeListener = term.onWriteParsed(syncAtBottom);
+    const bufferListener = term.buffer.onBufferChange(syncAtBottom);
+    syncAtBottom();
 
     // WebGL context creation genuinely fails on some machines and in some
     // remote-display setups; falling back to the canvas renderer is far better
@@ -338,7 +366,11 @@ export function useTerminal(
 
       cancelAnimationFrame(webglFrame);
       dataListener.dispose();
+      scrollListener.dispose();
+      writeListener.dispose();
+      bufferListener.dispose();
       webgl?.dispose();
+      termRef.current = null;
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session
       // switches would exhaust the browser's context pool.
       term.dispose();
@@ -365,5 +397,34 @@ export function useTerminal(
     [],
   );
 
-  return { containerRef, connected, error, send, sendControl, setInputTransform };
+  const scrollLines = useCallback((delta: number): void => {
+    const term = termRef.current;
+    if (!term || delta === 0) return;
+    if (term.buffer.active.type === 'alternate') {
+      // Full-screen TUIs (Claude Code, vim, less, tmux) keep no scrollback of
+      // their own: the only way to move within them is to give them the key
+      // they already understand. `\x1b[A/B` is the normal-cursor-key form; the
+      // application-cursor-key form is accepted by every TUI we target.
+      const key = delta < 0 ? '\x1b[A' : '\x1b[B';
+      send(key.repeat(Math.min(Math.abs(delta), 20)));
+      return;
+    }
+    term.scrollLines(delta);
+  }, [send]);
+
+  const scrollToBottom = useCallback((): void => {
+    termRef.current?.scrollToBottom();
+  }, []);
+
+  return {
+    containerRef,
+    connected,
+    error,
+    send,
+    sendControl,
+    setInputTransform,
+    scrollLines,
+    scrollToBottom,
+    atBottom,
+  };
 }
