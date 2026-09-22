@@ -178,6 +178,15 @@ export const api = {
     return request<void>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
+  backendInfo(): Promise<{ backend: 'direct' | 'tmux'; running: number }> {
+    return request('/sessions/backend');
+  },
+
+  async deleteAllSessions(): Promise<number> {
+    const { deleted } = await request<{ deleted: number }>('/sessions/delete-all', { method: 'POST' });
+    return deleted;
+  },
+
   removeSession(id: string): Promise<void> {
     return request<void>(`/sessions/${encodeURIComponent(id)}/remove`, { method: 'POST' });
   },

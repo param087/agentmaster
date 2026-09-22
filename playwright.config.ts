@@ -27,7 +27,9 @@ export default defineConfig({
   webServer: {
     command:
       `rm -rf "${TMP}" && mkdir -p "${TMP}" && npm run build && ` +
-      `PORT=${PORT} AGENTMASTER_DB="${TMP}/db.sqlite" AGENTMASTER_HARNESSES="${HARNESSES}" npm start`,
+      `(tmux -L agentmaster-e2e kill-server 2>/dev/null || true) && ` +
+      `PORT=${PORT} AGENTMASTER_DB="${TMP}/db.sqlite" AGENTMASTER_HARNESSES="${HARNESSES}" ` +
+      `AGENTMASTER_STATE_DIR="${TMP}/state" AGENTMASTER_TMUX_SOCKET=agentmaster-e2e npm start`,
     url: `${BASE}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,

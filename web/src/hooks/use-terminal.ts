@@ -131,9 +131,21 @@ const SEARCH_DECORATIONS: ISearchOptions['decorations'] = {
  * showing the dead run's output, and without clearing it the new run's output
  * would be appended to a corpse.
  */
-type ServerControlMessage = { type: 'reset' };
+type ServerControlMessage =
+  | { type: 'reset' }
+  | { type: 'modes'; alt: boolean; appCursor: boolean };
 
-function handleControl(raw: string, term: Terminal): void {
+/**
+ * Modes of the program inside tmux. With the tmux backend the browser only sees
+ * tmux's client, which stays on the normal screen, so full-screen programs are
+ * reported by the server instead of read from xterm.
+ */
+export interface InnerModes {
+  alt: boolean;
+  appCursor: boolean;
+}
+
+function handleControl(raw: string, term: Terminal, onModes: (modes: InnerModes) => void): void {
   let message: unknown;
   try {
     message = JSON.parse(raw);
@@ -141,8 +153,9 @@ function handleControl(raw: string, term: Terminal): void {
     return; // Unparseable control is ignored, never rendered.
   }
   if (typeof message !== 'object' || message === null) return;
-  const { type } = message as Partial<ServerControlMessage>;
-  if (type === 'reset') term.reset();
+  const msg = message as Partial<ServerControlMessage> & { alt?: unknown; appCursor?: unknown };
+  if (msg.type === 'reset') term.reset();
+  if (msg.type === 'modes') onModes({ alt: msg.alt === true, appCursor: msg.appCursor === true });
 }
 
 /**
@@ -180,7 +193,11 @@ interface TerminalProbe {
   bufferType: () => string;
 }
 
-function exposeForTests(term: Terminal, sessionId: string): () => void {
+function exposeForTests(
+  term: Terminal,
+  sessionId: string,
+  innerModes: () => InnerModes | null,
+): () => void {
   let enabled = false;
   try {
     enabled = window.localStorage.getItem('e2e') === '1';
@@ -199,7 +216,8 @@ function exposeForTests(term: Terminal, sessionId: string): () => void {
     },
     viewportY: () => term.buffer.active.viewportY,
     baseY: () => term.buffer.active.baseY,
-    bufferType: () => term.buffer.active.type,
+    // What the user is effectively on, counting a full-screen program in tmux.
+    bufferType: () => (innerModes()?.alt ? 'alternate' : term.buffer.active.type),
   };
   const host = window as unknown as { __term?: TerminalProbe; __terms?: Record<string, TerminalProbe> };
   host.__term = probe;
@@ -240,6 +258,8 @@ export function useTerminal(
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  /** Set only by a tmux-backed server; null means "trust xterm's own modes". */
+  const innerModesRef = useRef<InnerModes | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
@@ -286,7 +306,8 @@ export function useTerminal(
 
     term.open(container);
     termRef.current = term;
-    const unexpose = exposeForTests(term, sessionId);
+    innerModesRef.current = null;
+    const unexpose = exposeForTests(term, sessionId, () => innerModesRef.current);
 
     const serializeAddon = new SerializeAddon();
     term.loadAddon(serializeAddon);
@@ -307,7 +328,8 @@ export function useTerminal(
     const syncAtBottom = (): void => {
       if (cancelled) return;
       const buffer = term.buffer.active;
-      setAtBottom(buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY);
+      const innerAlt = innerModesRef.current?.alt === true;
+      setAtBottom(innerAlt || buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY);
     };
     const scrollListener = term.onScroll(syncAtBottom);
     const writeListener = term.onWriteParsed(syncAtBottom);
@@ -424,7 +446,12 @@ export function useTerminal(
           term.write(new Uint8Array(event.data));
           return;
         }
-        if (typeof event.data === 'string') handleControl(event.data, term);
+        if (typeof event.data === 'string') {
+          handleControl(event.data, term, (modes) => {
+            innerModesRef.current = modes;
+            syncAtBottom();
+          });
+        }
       };
 
       ws.onerror = () => {
@@ -514,11 +541,15 @@ export function useTerminal(
   const scrollLines = useCallback((delta: number): void => {
     const term = termRef.current;
     if (!term || delta === 0) return;
-    if (term.buffer.active.type === 'alternate') {
+    const inner = innerModesRef.current;
+    if (inner?.alt || term.buffer.active.type === 'alternate') {
       // Full-screen TUIs (Claude Code, vim, less, tmux) keep no scrollback of
       // their own: the only way to move within them is to give them the key
       // they already understand, in the form they asked for (DECCKM).
-      const key = arrowKey(delta < 0 ? 'up' : 'down', term.modes.applicationCursorKeysMode);
+      const key = arrowKey(
+        delta < 0 ? 'up' : 'down',
+        inner?.alt ? inner.appCursor : term.modes.applicationCursorKeysMode,
+      );
       send(key.repeat(Math.min(Math.abs(delta), 20)));
       return;
     }

@@ -312,9 +312,11 @@ export function AppShell({
     // destroys something unrecoverable.
     setMenuOpen(false);
     setConfirm({
-      title: isTerminalStatus(session.status) ? 'Delete session?' : 'Remove session?',
-      body: `"${session.title}" and its output will be discarded. This cannot be undone.`,
-      confirmLabel: isTerminalStatus(session.status) ? 'Delete' : 'Remove',
+      title: 'Delete session?',
+      body: isTerminalStatus(session.status)
+        ? `"${session.title}", its output and its history will be deleted. This cannot be undone.`
+        : `"${session.title}" is still running. Deleting stops the agent and erases its output and history, even across restarts. This cannot be undone.`,
+      confirmLabel: 'Delete',
       destructive: true,
       onConfirm: () => runAction(api.removeSession(session.id)),
     });
@@ -445,13 +447,14 @@ export function AppShell({
       }}
       title={
         isTerminalStatus(selected.status)
-          ? 'Forget this session and its output'
-          : 'Kill and forget this session'
+          ? 'Delete this session, its output and history'
+          : 'Stop the agent and delete this session for good'
       }
+      aria-label="Delete"
       className={cn(HEADER_BUTTON, 'hover:border-status-error/50 hover:text-status-error')}
     >
       <Trash2 className="size-3.5" />
-      {isTerminalStatus(selected.status) ? 'Delete' : 'Remove'}
+      Delete
     </button>
   );
 
