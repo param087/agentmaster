@@ -74,3 +74,12 @@ export const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStat
 export function isTerminalStatus(status: SessionStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
+
+/** One status transition, as returned by `GET /api/sessions/:id/events`. */
+export interface StatusEvent {
+  id: number;
+  sessionId: string;
+  at: number;
+  status: SessionStatus;
+  waitKind: WaitKind | null;
+}

@@ -4,6 +4,7 @@ import {
   Maximize2,
   Menu,
   MoreVertical,
+  History,
   Pin,
   PinOff,
   RotateCcw,
@@ -29,6 +30,7 @@ import { formatPrompt } from '../lib/prompt';
 import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
 import { EditableTitle } from './editable-title';
+import { TimelinePanel } from './timeline-panel';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
@@ -126,6 +128,7 @@ export function AppShell({
   useEffect(() => setPtyDims(null), [selectedId]);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(false);
   /**
    * The one pending confirmation, or null. A single slot rather than a flag per
    * action: only one dialog can ever be up, and this keeps the wiring honest.
@@ -357,6 +360,22 @@ export function AppShell({
     </button>
   );
 
+  const timelineButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        setTimelineOpen((open) => !open);
+      }}
+      aria-pressed={timelineOpen}
+      title="Where this session's time went"
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      <History className="size-3.5" />
+      Timeline
+    </button>
+  );
+
   const pinButton = selected && (
     <button
       type="button"
@@ -547,6 +566,7 @@ export function AppShell({
                         className="fixed inset-0 z-30 cursor-default"
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
+                        {timelineButton}
                         {pinButton}
                         {fitButton}
                         {isTerminalStatus(selected.status) ? restartButton : killButton}
@@ -557,6 +577,7 @@ export function AppShell({
                 </>
               ) : (
                 <>
+                  {timelineButton}
                   {pinButton}
                   {fitButton}
                   {isTerminalStatus(selected.status) ? restartButton : killButton}
@@ -575,7 +596,10 @@ export function AppShell({
           </div>
         )}
 
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1">
+          {timelineOpen && selected && (
+            <TimelinePanel session={selected} now={now} onClose={() => setTimelineOpen(false)} />
+          )}
           <TerminalView
             sessionId={selectedId}
             dims={ptyDims}

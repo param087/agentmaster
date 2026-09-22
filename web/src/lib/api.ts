@@ -1,4 +1,4 @@
-import type { HarnessInfo, Session } from './types';
+import type { HarnessInfo, Session, StatusEvent } from './types';
 
 /** A non-2xx response from the server, carrying its status and `{error}` message. */
 export class ApiError extends Error {
@@ -108,6 +108,13 @@ export const api = {
   }): Promise<Session> {
     const { session } = await request<{ session: Session }>('/sessions', jsonPost(input));
     return session;
+  },
+
+  async sessionEvents(id: string): Promise<StatusEvent[]> {
+    const { events } = await request<{ events: StatusEvent[] }>(
+      `/sessions/${encodeURIComponent(id)}/events`,
+    );
+    return events;
   },
 
   /** Renames and/or pins a session. */

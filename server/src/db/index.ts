@@ -268,7 +268,11 @@ export function openDb(path?: string): Db {
       `SELECT * FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     ),
     listEvents: sqlite.prepare(
-      `SELECT * FROM events WHERE session_id = ? ORDER BY at ASC, id ASC LIMIT ?`,
+      // The *latest* N, returned oldest-first: a long-lived session must show
+      // what happened recently, not its first 500 transitions.
+      `SELECT * FROM (
+         SELECT * FROM events WHERE session_id = ? ORDER BY at DESC, id DESC LIMIT ?
+       ) ORDER BY at ASC, id ASC`,
     ),
     closeOrphaned: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = NULL WHERE exited_at IS NULL`,

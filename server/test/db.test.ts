@@ -182,11 +182,12 @@ describe('events', () => {
     expect(db.listEvents('s1')[0]?.at).toBeGreaterThanOrEqual(before);
   });
 
-  it('listEvents respects limit', () => {
+  it('listEvents keeps the most recent events when limited, oldest first', () => {
     seed('s1', 1000);
     db.insertEvent('s1', 'busy', null, 1);
     db.insertEvent('s1', 'idle', null, 2);
-    expect(db.listEvents('s1', 1).map((r) => r.status)).toEqual(['busy']);
+    db.insertEvent('s1', 'done', null, 3);
+    expect(db.listEvents('s1', 2).map((r) => r.status)).toEqual(['idle', 'done']);
   });
 
   it('throws when inserting an event for a nonexistent session', () => {

@@ -215,6 +215,20 @@ describe('PATCH /api/sessions/:id', () => {
   });
 });
 
+describe('GET /api/sessions/:id/events', () => {
+  it('returns the status history, oldest first', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    await waitFor(() => manager!.get(session.id)!.info.status !== 'starting');
+    const res = await fetch(`${base}/api/sessions/${session.id}/events`);
+    expect(res.status).toBe(200);
+    const { events } = (await res.json()) as { events: Array<{ status: string; at: number }> };
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]!.status).toBe('busy');
+    expect((await fetch(`${base}/api/sessions/nope/events`)).status).toBe(404);
+  }, PTY_TIMEOUT);
+});
+
 describe('/api/presets', () => {
   const post = (base: string, path: string, body?: unknown) =>
     fetch(`${base}${path}`, {

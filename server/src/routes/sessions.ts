@@ -90,6 +90,13 @@ export function sessionsRouter(manager: SessionManager): Router {
     res.json({ session });
   });
 
+  /** Status history for the timeline view, oldest first. */
+  router.get('/:id/events', (req, res, next) => {
+    const id = req.params.id ?? '';
+    if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
+    res.json({ events: manager.database.listEvents(id) });
+  });
+
   router.post('/:id/remove', (req, res, next) => {
     const id = req.params.id ?? '';
     if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
