@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import { useTerminal, TERM_ROWS, type TerminalDims } from '../hooks/use-terminal';
+import { Search } from 'lucide-react';
+
 import { cn } from '../lib/cn';
+import { isPrimaryModifier } from '../lib/keys';
+import { TerminalSearch } from './terminal-search';
 
 /** Reads the rendered pixel size of the xterm screen, or zeros before first paint. */
 function measureTerminal(container: HTMLElement): { width: number; height: number } {
@@ -98,8 +102,41 @@ export function TerminalView({
   onInputTransformReady,
   onFitPlanReady,
 }: TerminalViewProps) {
-  const { containerRef, connected, error, send, setInputTransform, scrollLines, scrollToBottom, atBottom } =
-    useTerminal(sessionId, dims);
+  const {
+    containerRef,
+    connected,
+    error,
+    send,
+    setInputTransform,
+    scrollLines,
+    scrollToBottom,
+    atBottom,
+    search,
+    clearSearch,
+    searchResults,
+  } = useTerminal(sessionId, dims);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  const closeSearch = useCallback((): void => {
+    setSearchOpen(false);
+    clearSearch();
+    containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus();
+  }, [clearSearch, containerRef]);
+
+  // ⌘F opens find. Captured so the browser's own find bar — which cannot see
+  // into a canvas-rendered terminal — never opens instead.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!isPrimaryModifier(event) || event.altKey || event.key.toLowerCase() !== 'f') return;
+      event.preventDefault();
+      setSearchOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [sessionId]);
+
+  useEffect(() => setSearchOpen(false), [sessionId]);
   // Gestures are enabled where the fit-scale is genuinely unreadable: a finger
   // pointer, or a phone-width viewport (which is also what a desktop browser in
   // device-emulation mode reports). A wide desktop window gets neither, so its
@@ -477,6 +514,22 @@ export function TerminalView({
           className="absolute bottom-3 right-3 z-10 rounded-md border border-base-700 bg-base-850/90 px-2 py-1 text-[11px] text-base-200"
         >
           {Math.round(scale * 100)}% · Reset
+        </button>
+      )}
+
+      {searchOpen && (
+        <TerminalSearch results={searchResults} onSearch={search} onClose={closeSearch} />
+      )}
+
+      {touch && !searchOpen && (
+        <button
+          type="button"
+          aria-label="Find in terminal"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => setSearchOpen(true)}
+          className="absolute bottom-3 left-3 z-10 inline-flex size-8 items-center justify-center rounded-md border border-base-700 bg-base-850/90 text-base-200"
+        >
+          <Search className="size-4" />
         </button>
       )}
 

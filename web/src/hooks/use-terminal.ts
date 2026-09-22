@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search';
 
 /**
  * The PTY is fixed at 120x32 server-side so two browsers viewing the same
@@ -86,7 +87,35 @@ export interface UseTerminalResult {
   scrollToBottom: () => void;
   /** False while the user is looking at scrollback. Always true on the alt screen. */
   atBottom: boolean;
+  /** Finds `query` in the scrollback; returns false when there is no match. */
+  search: (query: string, direction: 'next' | 'previous', options?: SearchOptions) => boolean;
+  clearSearch: () => void;
+  /** Match position for the last search; `null` until one has run. */
+  searchResults: SearchResults | null;
 }
+
+export interface SearchOptions {
+  caseSensitive?: boolean;
+  regex?: boolean;
+  /** Keep the current match if it still matches — used while typing. */
+  incremental?: boolean;
+}
+
+export interface SearchResults {
+  /** Zero-based, or -1 when the cursor match is beyond the highlight limit. */
+  index: number;
+  count: number;
+}
+
+/** Highlight colours for search matches, in the terminal palette. */
+const SEARCH_DECORATIONS: ISearchOptions['decorations'] = {
+  matchBackground: '#4d5661',
+  matchBorder: '#4d5661',
+  matchOverviewRuler: '#f0a52e',
+  activeMatchBackground: '#f0a52e',
+  activeMatchBorder: '#ffc766',
+  activeMatchColorOverviewRuler: '#ffc766',
+};
 
 /**
  * Control messages the *server* sends, as text frames.
@@ -192,6 +221,8 @@ export function useTerminal(
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const inputTransformRef = useRef<((data: string) => string) | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -236,6 +267,14 @@ export function useTerminal(
     term.open(container);
     termRef.current = term;
     const unexpose = exposeForTests(term);
+
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchRef.current = searchAddon;
+    setSearchResults(null);
+    const searchListener = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (!cancelled) setSearchResults({ index: resultIndex, count: resultCount });
+    });
 
     // ---- scroll position tracking ----------------------------------------
     //
@@ -413,6 +452,8 @@ export function useTerminal(
       bufferListener.dispose();
       webgl?.dispose();
       unexpose();
+      searchListener.dispose();
+      searchRef.current = null;
       termRef.current = null;
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session
       // switches would exhaust the browser's context pool.
@@ -459,7 +500,37 @@ export function useTerminal(
     termRef.current?.scrollToBottom();
   }, []);
 
+  const search = useCallback(
+    (query: string, direction: 'next' | 'previous', options: SearchOptions = {}): boolean => {
+      const addon = searchRef.current;
+      if (!addon) return false;
+      if (query === '') {
+        addon.clearDecorations();
+        setSearchResults(null);
+        return false;
+      }
+      const opts: ISearchOptions = { ...options, decorations: SEARCH_DECORATIONS };
+      try {
+        return direction === 'next' ? addon.findNext(query, opts) : addon.findPrevious(query, opts);
+      } catch {
+        // An invalid regex mid-typing ("foo(") is not an error worth surfacing.
+        setSearchResults({ index: -1, count: 0 });
+        return false;
+      }
+    },
+    [],
+  );
+
+  const clearSearch = useCallback((): void => {
+    searchRef.current?.clearDecorations();
+    termRef.current?.clearSelection();
+    setSearchResults(null);
+  }, []);
+
   return {
+    search,
+    clearSearch,
+    searchResults,
     containerRef,
     connected,
     error,

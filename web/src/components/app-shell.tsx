@@ -13,6 +13,7 @@ import {
 import type { Session } from '../lib/types';
 import { api, ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
+import { isPrimaryModifier } from '../lib/keys';
 import { useIsNarrow, useIsTouch } from '../hooks/use-media-query';
 import type { UseNotificationsResult } from '../hooks/use-notifications';
 import type { UsePushResult } from '../hooks/use-push';
@@ -42,19 +43,6 @@ function useClock(): number {
     return () => clearInterval(timer);
   }, []);
   return now;
-}
-
-/**
- * ⌘ on Apple platforms, Ctrl+Shift elsewhere.
- *
- * Plain Ctrl-K and Ctrl-N are readline bindings (kill-to-end-of-line, next-line)
- * that every harness TUI expects to receive, so on non-Apple platforms the app
- * must not swallow them. ⌘ is safe because terminals never claim it.
- */
-function isPrimaryModifier(event: KeyboardEvent): boolean {
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  if (mac) return event.metaKey && !event.ctrlKey;
-  return event.ctrlKey && event.shiftKey && !event.metaKey;
 }
 
 const HEADER_BUTTON =
