@@ -215,6 +215,53 @@ describe('PATCH /api/sessions/:id', () => {
   });
 });
 
+describe('/api/presets', () => {
+  const post = (base: string, path: string, body?: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it('saves, lists alphabetically, and deletes presets', async () => {
+    const base = await boot();
+    expect((await post(base, '/api/presets', { name: 'zeta', harnessId: 'test-bash', cwd: '/tmp' })).status).toBe(201);
+    expect((await post(base, '/api/presets', { name: 'Alpha', harnessId: 'test-bash', cwd: '/tmp', prompt: '  ' })).status).toBe(201);
+
+    const { presets } = (await (await fetch(`${base}/api/presets`)).json()) as {
+      presets: Array<{ id: string; name: string; prompt: string | null }>;
+    };
+    expect(presets.map((p) => p.name)).toEqual(['Alpha', 'zeta']);
+    expect(presets[0]!.prompt).toBeNull();
+
+    expect((await fetch(`${base}/api/presets/${presets[0]!.id}`, { method: 'DELETE' })).status).toBe(204);
+    expect((await fetch(`${base}/api/presets/${presets[0]!.id}`, { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('rejects a preset without a name', async () => {
+    const base = await boot();
+    expect((await post(base, '/api/presets', { name: '', harnessId: 'x', cwd: '/tmp' })).status).toBe(400);
+  });
+
+  it('launches a session titled after the preset and types its prompt once ready', async () => {
+    const base = await boot(bashHarness({ args: ['--norc', '--noprofile', '-i'], idleMs: 200 }));
+    const created = await post(base, '/api/presets', {
+      name: 'Greeter',
+      harnessId: 'test-bash',
+      cwd: '/tmp',
+      prompt: 'echo preset-$((20+22))',
+    });
+    const { preset } = (await created.json()) as { preset: { id: string } };
+
+    const launched = await post(base, `/api/presets/${preset.id}/launch`);
+    expect(launched.status).toBe(201);
+    const { session } = (await launched.json()) as { session: Session };
+    expect(session.title).toBe('Greeter');
+
+    await waitFor(() => manager!.get(session.id)!.replay().toString('utf8').includes('preset-42'), 8000);
+  }, PTY_TIMEOUT);
+});
+
 describe('DELETE /api/sessions/:id', () => {
   it('returns 404 for an unknown id', async () => {
     const base = await boot();

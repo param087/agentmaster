@@ -8,6 +8,7 @@ import { sendPush, type PushPayload } from '../push/sender.js';
 import type { StatusSnapshot } from '../status/engine.js';
 import { isTerminalStatus, type Session } from '../status/types.js';
 import { PtySession } from './session.js';
+import { formatPrompt } from '../../../shared/prompt.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
 const NOTIFY_COOLDOWN_MS = 30_000;
@@ -57,7 +58,14 @@ export interface CreateSessionInput {
   harnessId: string;
   cwd: string;
   title?: string;
+  /** Typed into the harness once it first settles (idle or waiting). */
+  initialPrompt?: string;
 }
+
+/** Statuses meaning "the harness has drawn its UI and is ready for input". */
+const READY_STATUSES = new Set(['idle', 'waiting_input', 'done']);
+/** A harness that never settles still gets its prompt, rather than silently none. */
+const INITIAL_PROMPT_DEADLINE_MS = 30_000;
 
 export interface SessionManagerOptions {
   /** Injectable for tests; defaults to the global YAML registry. */
@@ -154,8 +162,33 @@ export class SessionManager {
       this.db.markExited(id, code);
     });
 
+    if (input.initialPrompt?.trim()) this.queueInitialPrompt(session, input.initialPrompt);
+
     emitServerEvent({ t: 'session:created', session: session.info });
     return session.info;
+  }
+
+  private queueInitialPrompt(session: PtySession, prompt: string): void {
+    let sent = false;
+    const deliver = (): void => {
+      if (sent) return;
+      sent = true;
+      clearTimeout(deadline);
+      session.off('status', onStatus);
+      // Agent CLIs enable bracketed paste, so multi-line prompts arrive whole.
+      session.write(formatPrompt(prompt, true));
+    };
+    const onStatus = (snapshot: StatusSnapshot): void => {
+      if (READY_STATUSES.has(snapshot.status)) deliver();
+    };
+    const deadline = setTimeout(deliver, INITIAL_PROMPT_DEADLINE_MS);
+    deadline.unref?.();
+    session.on('status', onStatus);
+    session.once('exit', () => {
+      sent = true;
+      clearTimeout(deadline);
+      session.off('status', onStatus);
+    });
   }
 
   get(id: string): PtySession | undefined {

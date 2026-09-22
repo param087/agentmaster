@@ -30,6 +30,15 @@ export interface EventRow {
   waitKind: WaitKind | null;
 }
 
+export interface PresetRow {
+  id: string;
+  name: string;
+  harnessId: string;
+  cwd: string;
+  prompt: string | null;
+  createdAt: number;
+}
+
 export interface PushSubscriptionRow {
   endpoint: string;
   p256dh: string;
@@ -83,6 +92,11 @@ export interface Db {
    */
   getHarnessPrefs(): Map<string, boolean>;
   setHarnessEnabled(harnessId: string, enabled: boolean, at?: number): void;
+
+  insertPreset(row: PresetRow): void;
+  listPresets(): PresetRow[];
+  getPreset(id: string): PresetRow | undefined;
+  deletePreset(id: string): boolean;
 
   close(): void;
 }
@@ -156,6 +170,26 @@ function toEventRow(r: EventRecord): EventRow {  return {
     at: r.at,
     status: r.status as SessionStatus,
     waitKind: (r.wait_kind as WaitKind | null) ?? null,
+  };
+}
+
+interface PresetRecord {
+  id: string;
+  name: string;
+  harness_id: string;
+  cwd: string;
+  prompt: string | null;
+  created_at: number;
+}
+
+function toPresetRow(r: PresetRecord): PresetRow {
+  return {
+    id: r.id,
+    name: r.name,
+    harnessId: r.harness_id,
+    cwd: r.cwd,
+    prompt: r.prompt,
+    createdAt: r.created_at,
   };
 }
 
@@ -261,6 +295,13 @@ export function openDb(path?: string): Db {
       `INSERT INTO harness_prefs (harness_id, enabled, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(harness_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
     ),
+    insertPreset: sqlite.prepare(
+      `INSERT INTO presets (id, name, harness_id, cwd, prompt, created_at)
+       VALUES (@id, @name, @harnessId, @cwd, @prompt, @createdAt)`,
+    ),
+    listPresets: sqlite.prepare(`SELECT * FROM presets ORDER BY name COLLATE NOCASE ASC`),
+    getPreset: sqlite.prepare(`SELECT * FROM presets WHERE id = ?`),
+    deletePreset: sqlite.prepare(`DELETE FROM presets WHERE id = ?`),
     pushFail: sqlite.prepare(
       `UPDATE push_subscriptions SET failures = failures + 1 WHERE endpoint = ?`,
     ),
@@ -329,6 +370,19 @@ export function openDb(path?: string): Db {
     },
     setHarnessEnabled(harnessId, enabled, at = Date.now()) {
       stmts.setHarnessPref.run(harnessId, enabled ? 1 : 0, at);
+    },
+    insertPreset(row) {
+      stmts.insertPreset.run(row);
+    },
+    listPresets() {
+      return (stmts.listPresets.all() as PresetRecord[]).map(toPresetRow);
+    },
+    getPreset(id) {
+      const record = stmts.getPreset.get(id) as PresetRecord | undefined;
+      return record ? toPresetRow(record) : undefined;
+    },
+    deletePreset(id) {
+      return stmts.deletePreset.run(id).changes > 0;
     },
     close() {
       sqlite.close();

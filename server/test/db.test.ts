@@ -33,8 +33,8 @@ describe('migrations', () => {
     return v;
   }
 
-  // Bumped deliberately with each migration. 004 adds sessions.pinned.
-  const LATEST_SCHEMA = 4;
+  // Bumped deliberately with each migration. 005 adds presets.
+  const LATEST_SCHEMA = 5;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');

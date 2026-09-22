@@ -11,6 +11,15 @@ export class ApiError extends Error {
   }
 }
 
+export interface Preset {
+  id: string;
+  name: string;
+  harnessId: string;
+  cwd: string;
+  prompt: string | null;
+  createdAt: number;
+}
+
 export interface DirEntry {
   name: string;
   path: string;
@@ -69,7 +78,34 @@ export const api = {
     return sessions;
   },
 
-  async createSession(input: { harnessId: string; cwd: string; title?: string }): Promise<Session> {
+  async presets(): Promise<Preset[]> {
+    const { presets } = await request<{ presets: Preset[] }>('/presets');
+    return presets;
+  },
+
+  async savePreset(input: { name: string; harnessId: string; cwd: string; prompt?: string }): Promise<Preset> {
+    const { preset } = await request<{ preset: Preset }>('/presets', jsonPost(input));
+    return preset;
+  },
+
+  deletePreset(id: string): Promise<void> {
+    return request<void>(`/presets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async launchPreset(id: string): Promise<Session> {
+    const { session } = await request<{ session: Session }>(
+      `/presets/${encodeURIComponent(id)}/launch`,
+      { method: 'POST' },
+    );
+    return session;
+  },
+
+  async createSession(input: {
+    harnessId: string;
+    cwd: string;
+    title?: string;
+    initialPrompt?: string;
+  }): Promise<Session> {
     const { session } = await request<{ session: Session }>('/sessions', jsonPost(input));
     return session;
   },

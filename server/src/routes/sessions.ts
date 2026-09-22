@@ -17,6 +17,7 @@ const createBody = z.object({
   harnessId: z.string().min(1),
   cwd: z.string().min(1),
   title: z.string().min(1).optional(),
+  initialPrompt: z.string().max(20_000).optional(),
 });
 
 /** Session titles are shown in a 280px column; anything longer is a paste accident. */
