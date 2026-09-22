@@ -35,6 +35,8 @@ export interface Session {
   harnessIcon: string;
   cwd: string;
   title: string;
+  /** Kept at the top of the sidebar. */
+  pinned?: boolean;
   status: SessionStatus;
   waitKind?: WaitKind;
   actions?: QuickAction[];

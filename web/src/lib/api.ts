@@ -74,6 +74,16 @@ export const api = {
     return session;
   },
 
+  /** Renames and/or pins a session. */
+  async updateSession(id: string, patch: { title?: string; pinned?: boolean }): Promise<Session> {
+    const { session } = await request<{ session: Session }>(`/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return session;
+  },
+
   /** Kills the process but keeps the session listed so its output stays readable. */
   killSession(id: string): Promise<void> {
     return request<void>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });

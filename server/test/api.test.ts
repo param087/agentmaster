@@ -177,6 +177,44 @@ describe('POST /api/sessions', () => {
   });
 });
 
+describe('PATCH /api/sessions/:id', () => {
+  const patch = (base: string, id: string, body: unknown) =>
+    fetch(`${base}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('renames and pins, persisting both to the database', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+
+    const renamed = await patch(base, session.id, { title: '  Refactor auth  ' });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { session: Session }).session.title).toBe('Refactor auth');
+
+    const pinned = await patch(base, session.id, { pinned: true });
+    expect(((await pinned.json()) as { session: Session }).session.pinned).toBe(true);
+
+    expect(db!.getSession(session.id)).toMatchObject({ title: 'Refactor auth', pinned: true });
+    const list = (await (await fetch(`${base}/api/sessions`)).json()) as { sessions: Session[] };
+    expect(list.sessions[0]).toMatchObject({ title: 'Refactor auth', pinned: true });
+  }, PTY_TIMEOUT);
+
+  it('rejects empty titles, unknown fields and empty bodies as 400', async () => {
+    const base = await boot();
+    const session = await createSession(base);
+    expect((await patch(base, session.id, { title: '   ' })).status).toBe(400);
+    expect((await patch(base, session.id, { cwd: '/' })).status).toBe(400);
+    expect((await patch(base, session.id, {})).status).toBe(400);
+  }, PTY_TIMEOUT);
+
+  it('returns 404 for an unknown id', async () => {
+    const base = await boot();
+    expect((await patch(base, 'nope', { pinned: true })).status).toBe(404);
+  });
+});
+
 describe('DELETE /api/sessions/:id', () => {
   it('returns 404 for an unknown id', async () => {
     const base = await boot();

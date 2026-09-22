@@ -1,4 +1,4 @@
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Pin } from 'lucide-react';
 
 import type { Session, WaitKind } from '../lib/types';
 import { isModalWait } from '../lib/types';
@@ -128,6 +128,10 @@ export function SessionRow({
           )}
         </span>
       </span>
+
+      {session.pinned && !modal && (
+        <Pin aria-label="Pinned" className="size-3 shrink-0 text-base-500" />
+      )}
 
       {modal && (
         <AlertTriangle

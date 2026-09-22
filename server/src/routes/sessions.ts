@@ -19,6 +19,19 @@ const createBody = z.object({
   title: z.string().min(1).optional(),
 });
 
+/** Session titles are shown in a 280px column; anything longer is a paste accident. */
+const MAX_TITLE_LENGTH = 120;
+
+const patchBody = z
+  .object({
+    title: z.string().trim().min(1).max(MAX_TITLE_LENGTH).optional(),
+    pinned: z.boolean().optional(),
+  })
+  .strict()
+  .refine((body) => body.title !== undefined || body.pinned !== undefined, {
+    message: 'Nothing to update: send title and/or pinned',
+  });
+
 const inputBody = z.object({
   keys: z.string(),
 });
@@ -65,6 +78,15 @@ export function sessionsRouter(manager: SessionManager): Router {
     if (!manager.get(id)) return next(httpError(404, `Unknown session "${id}"`));
     manager.kill(id);
     res.status(204).end();
+  });
+
+  router.patch('/:id', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const parsed = patchBody.safeParse(req.body);
+    if (!parsed.success) return next(httpError(400, firstIssue(parsed.error)));
+    const session = manager.update(id, parsed.data);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    res.json({ session });
   });
 
   router.post('/:id/remove', (req, res, next) => {

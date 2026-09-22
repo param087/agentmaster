@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 
 import { emitServerEvent } from '../bus.js';
 import { getHarness, loadHarnesses, type Harness } from '../config/harnesses.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, type Db, type SessionMetaPatch } from '../db/index.js';
 import { sendPush, type PushPayload } from '../push/sender.js';
 import type { StatusSnapshot } from '../status/engine.js';
 import { isTerminalStatus, type Session } from '../status/types.js';
@@ -178,6 +178,25 @@ export class SessionManager {
     return [...this.map.values()]
       .map((s) => s.info)
       .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /**
+   * Applies user edits (rename, pin). Returns the updated wire info, or
+   * `undefined` for an unknown id. Whitespace-only titles are rejected by the
+   * route; here a title is trimmed and stored as given.
+   */
+  update(id: string, patch: SessionMetaPatch): Session | undefined {
+    const session = this.map.get(id);
+    if (!session) return undefined;
+    const clean: SessionMetaPatch = {};
+    if (patch.title !== undefined) clean.title = patch.title.trim();
+    if (patch.pinned !== undefined) clean.pinned = patch.pinned;
+
+    this.db.updateSessionMeta(id, clean);
+    if (clean.title !== undefined) session.info.title = clean.title;
+    if (clean.pinned !== undefined) session.info.pinned = clean.pinned;
+    emitServerEvent({ t: 'session:updated', session: session.info });
+    return session.info;
   }
 
   kill(id: string): void {

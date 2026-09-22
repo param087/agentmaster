@@ -4,6 +4,8 @@ import {
   Maximize2,
   Menu,
   MoreVertical,
+  Pin,
+  PinOff,
   RotateCcw,
   Skull,
   Trash2,
@@ -24,6 +26,7 @@ import { NewSessionDialog } from './new-session-dialog';
 import { QuickActions } from './quick-actions';
 import { formatElapsed } from './session-row';
 import { ConfirmDialog } from './confirm-dialog';
+import { EditableTitle } from './editable-title';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
@@ -341,6 +344,22 @@ export function AppShell({
     </button>
   );
 
+  const pinButton = selected && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        runAction(api.updateSession(selected.id, { pinned: !selected.pinned }).then(() => undefined));
+      }}
+      aria-pressed={selected.pinned === true}
+      title={selected.pinned ? 'Unpin from the top of the list' : 'Pin to the top of the list'}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      {selected.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+      {selected.pinned ? 'Unpin' : 'Pin'}
+    </button>
+  );
+
   const fitButton = selected && (
     <button
       type="button"
@@ -447,9 +466,19 @@ export function AppShell({
 
               <span className="min-w-0 flex-1 leading-tight">
                 <span className="flex items-baseline gap-2">
-                  <span className="truncate text-[13px] font-medium text-base-100">
-                    {selected.title}
-                  </span>
+                  <EditableTitle
+                    key={selected.id}
+                    title={selected.title}
+                    onRename={async (title) => {
+                      setActionError(null);
+                      try {
+                        await api.updateSession(selected.id, { title });
+                      } catch (cause) {
+                        setActionError(cause instanceof ApiError ? cause.message : String(cause));
+                        throw cause;
+                      }
+                    }}
+                  />
                   {/* The full path is the first thing to go when space runs
                       out; the folder name and status carry the meaning. */}
                   <span
@@ -505,6 +534,7 @@ export function AppShell({
                         className="fixed inset-0 z-30 cursor-default"
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
+                        {pinButton}
                         {fitButton}
                         {isTerminalStatus(selected.status) ? restartButton : killButton}
                         {removeButton}
@@ -514,6 +544,7 @@ export function AppShell({
                 </>
               ) : (
                 <>
+                  {pinButton}
                   {fitButton}
                   {isTerminalStatus(selected.status) ? restartButton : killButton}
                   {removeButton}

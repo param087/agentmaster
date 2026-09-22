@@ -33,9 +33,8 @@ describe('migrations', () => {
     return v;
   }
 
-  // Bumped deliberately with each migration. 003 adds harness_prefs, so a fresh
-  // database now lands on user_version 3.
-  const LATEST_SCHEMA = 3;
+  // Bumped deliberately with each migration. 004 adds sessions.pinned.
+  const LATEST_SCHEMA = 4;
   it('applies all migrations and is idempotent across re-opens', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentmaster-db-'));
     const file = join(dir, 'db.sqlite');
@@ -126,6 +125,7 @@ describe('sessions', () => {
       createdAt: 1000,
       exitedAt: null,
       exitCode: null,
+      pinned: false,
     });
   });
 
@@ -213,6 +213,17 @@ describe('closeOrphanedSessions', () => {
     expect(done?.exitCode).toBe(42);
 
     expect(db.closeOrphanedSessions(9999)).toBe(0);
+  });
+});
+
+describe('updateSessionMeta', () => {
+  it('renames and pins independently, defaulting pinned to false', () => {
+    seed('m', 1);
+    expect(db.getSession('m')?.pinned).toBe(false);
+    db.updateSessionMeta('m', { title: 'renamed' });
+    expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: false });
+    db.updateSessionMeta('m', { pinned: true });
+    expect(db.getSession('m')).toMatchObject({ title: 'renamed', pinned: true });
   });
 });
 

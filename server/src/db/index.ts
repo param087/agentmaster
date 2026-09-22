@@ -13,6 +13,13 @@ export interface SessionRow {
   createdAt: number;
   exitedAt: number | null;
   exitCode: number | null;
+  pinned: boolean;
+}
+
+/** The fields a user may edit on an existing session. */
+export interface SessionMetaPatch {
+  title?: string;
+  pinned?: boolean;
 }
 
 export interface EventRow {
@@ -41,7 +48,8 @@ export interface PushSubscriptionInput {
 }
 
 export interface Db {
-  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode'>): void;
+  insertSession(row: Omit<SessionRow, 'exitedAt' | 'exitCode' | 'pinned'>): void;
+  updateSessionMeta(id: string, patch: SessionMetaPatch): void;
   markExited(id: string, exitCode: number | null, at?: number): void;
   /**
    * Marks a restarted session as running again, keeping its original
@@ -92,6 +100,7 @@ interface SessionRecord {
   created_at: number;
   exited_at: number | null;
   exit_code: number | null;
+  pinned: number;
 }
 
 interface EventRecord {
@@ -137,6 +146,7 @@ function toSessionRow(r: SessionRecord): SessionRow {
     createdAt: r.created_at,
     exitedAt: r.exited_at,
     exitCode: r.exit_code,
+    pinned: r.pinned === 1,
   };
 }
 
@@ -211,6 +221,8 @@ export function openDb(path?: string): Db {
     markExited: sqlite.prepare(
       `UPDATE sessions SET exited_at = ?, exit_code = ? WHERE id = ?`,
     ),
+    updateTitle: sqlite.prepare(`UPDATE sessions SET title = ? WHERE id = ?`),
+    updatePinned: sqlite.prepare(`UPDATE sessions SET pinned = ? WHERE id = ?`),
     reopenSession: sqlite.prepare(
       `UPDATE sessions SET exited_at = NULL, exit_code = NULL WHERE id = ?`,
     ),
@@ -260,6 +272,13 @@ export function openDb(path?: string): Db {
     },
     markExited(id, exitCode, at = Date.now()) {
       stmts.markExited.run(at, exitCode, id);
+    },
+    updateSessionMeta(id, patch) {
+      const apply = sqlite.transaction(() => {
+        if (patch.title !== undefined) stmts.updateTitle.run(patch.title, id);
+        if (patch.pinned !== undefined) stmts.updatePinned.run(patch.pinned ? 1 : 0, id);
+      });
+      apply();
     },
     reopenSession(id) {
       stmts.reopenSession.run(id);

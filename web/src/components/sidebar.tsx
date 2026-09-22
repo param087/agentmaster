@@ -1,7 +1,9 @@
-import { BellOff, Plus, Settings, Smartphone, WifiOff } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { BellOff, Plus, Search, Settings, Smartphone, WifiOff, X } from 'lucide-react';
 
 import type { Session } from '../lib/types';
 import { cn } from '../lib/cn';
+import { orderSessions } from '../lib/session-order';
 import { AttentionQueue } from './attention-queue';
 import { SessionRow } from './session-row';
 import { isTerminalStatus } from './status-dot';
@@ -47,6 +49,10 @@ export function Sidebar({
   onOpenSettings,
 }: SidebarProps) {
   const finishedCount = sessions.filter((s) => isTerminalStatus(s.status)).length;
+  const [filter, setFilter] = useState('');
+  const visible = useMemo(() => orderSessions(sessions, filter), [sessions, filter]);
+  /** A filter box for two sessions is clutter; it earns its place at a handful. */
+  const showFilter = sessions.length >= 4 || filter !== '';
   return (
     <aside className="flex h-full w-[280px] shrink-0 flex-col border-r border-base-800 bg-base-900">
       <header className="flex shrink-0 items-center gap-2 border-b border-base-800 px-3 py-2.5">
@@ -135,6 +141,36 @@ export function Sidebar({
           )}
         </h2>
 
+        {showFilter && (
+          <label className="mx-2 mb-1.5 flex items-center gap-1.5 rounded-md border border-base-800 bg-base-950 px-2 focus-within:border-accent-dim">
+            <Search className="size-3.5 shrink-0 text-base-500" />
+            <input
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setFilter('');
+              }}
+              placeholder="Filter sessions"
+              aria-label="Filter sessions"
+              className="min-w-0 flex-1 bg-transparent py-1 text-[12px] text-base-100 placeholder:text-base-500 focus:outline-none"
+            />
+            {filter !== '' && (
+              <button
+                type="button"
+                aria-label="Clear filter"
+                onClick={() => setFilter('')}
+                className="text-base-500 hover:text-base-200"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </label>
+        )}
+
+        {sessions.length > 0 && visible.length === 0 && (
+          <p className="px-3.5 py-3 text-[12px] text-base-400">No sessions match “{filter}”.</p>
+        )}
+
         {sessions.length === 0 ? (
           <p className="px-3.5 py-6 text-[12px] leading-relaxed text-base-400">
             No sessions yet.
@@ -150,7 +186,7 @@ export function Sidebar({
           </p>
         ) : (
           <div className={cn('flex flex-col gap-0.5 px-2')}>
-            {sessions.map((session) => (
+            {visible.map((session) => (
               <SessionRow
                 key={session.id}
                 session={session}
