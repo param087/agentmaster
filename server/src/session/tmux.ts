@@ -39,6 +39,8 @@ set -g aggressive-resize on
 set -g mouse off
 set -g set-clipboard off
 set -g focus-events on
+# Lets Shift+Enter and other modified keys reach the agent (pi warns without it).
+set -g extended-keys on
 set -g remain-on-exit off
 set -g exit-empty on
 set -g destroy-unattached off
@@ -168,9 +170,11 @@ export function captureHistory(id: string): string {
         '-E',
         '-1',
         '-t',
-        `=${tmuxSessionName(id)}`,
+        // Pane commands need the trailing ':' — `=name` alone is a session
+        // target and capture-pane rejects it ("can't find pane").
+        `=${tmuxSessionName(id)}:`,
       ],
-      { encoding: 'utf8', timeout: TMUX_TIMEOUT_MS },
+      { encoding: 'utf8', timeout: TMUX_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const trimmed = out.replace(/\n+$/, '');
     return trimmed === '' ? '' : `${trimmed.replace(/\n/g, '\r\n')}\r\n`;

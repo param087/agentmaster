@@ -24,7 +24,7 @@ import {
   tmuxAvailable,
   type PtyBackend,
 } from './tmux.js';
-import { formatPrompt } from '../../../shared/prompt.js';
+import { sendPrompt } from '../../../shared/prompt.js';
 
 /** Per (sessionId, kind) suppression window for desktop notifications. */
 const NOTIFY_COOLDOWN_MS = 30_000;
@@ -161,7 +161,9 @@ export class SessionManager {
     // tmux sessions left by a previous run are picked back up; every other row
     // still open belonged to a direct PTY that died with that process.
     this.restoreTmuxSessions();
-    this.db.closeOrphanedSessions();
+    // Re-attached sessions are live: closing their rows would make the *next*
+    // restart forget them.
+    this.db.closeOrphanedSessions(undefined, new Set(this.map.keys()));
 
     this.pruneTimer = setInterval(() => this.pruneStale(), PRUNE_INTERVAL_MS);
     this.pruneTimer.unref?.();
@@ -261,7 +263,7 @@ export class SessionManager {
       clearTimeout(deadline);
       session.off('status', onStatus);
       // Agent CLIs enable bracketed paste, so multi-line prompts arrive whole.
-      session.write(formatPrompt(prompt, true));
+      void sendPrompt((data) => session.write(data), prompt, true);
     };
     const onStatus = (snapshot: StatusSnapshot): void => {
       if (READY_STATUSES.has(snapshot.status)) deliver();
