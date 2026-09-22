@@ -8,6 +8,7 @@ import {
   Maximize2,
   Menu,
   MoreVertical,
+  GitBranch,
   History,
   Pin,
   PinOff,
@@ -46,6 +47,7 @@ import { ConfirmDialog } from './confirm-dialog';
 import { EditableTitle } from './editable-title';
 import { ExportMenu, type TerminalExport } from './export-menu';
 import { TimelinePanel } from './timeline-panel';
+import { GitPanel } from './git-panel';
 import { SettingsDialog } from './settings-dialog';
 import { Sidebar } from './sidebar';
 import { StatusDot, STATUS_LABEL, STATUS_TEXT, isTerminalStatus } from './status-dot';
@@ -197,7 +199,10 @@ export function AppShell({
   const focusedPane = narrow ? 0 : paneState.focused;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [timelineOpen, setTimelineOpen] = useState(false);
+  /** At most one side panel at a time; they share the same slot. */
+  const [panel, setPanel] = useState<'timeline' | 'git' | null>(null);
+  const timelineOpen = panel === 'timeline';
+
   /**
    * The one pending confirmation, or null. A single slot rather than a flag per
    * action: only one dialog can ever be up, and this keeps the wiring honest.
@@ -439,7 +444,7 @@ export function AppShell({
       type="button"
       onClick={() => {
         setMenuOpen(false);
-        setTimelineOpen((open) => !open);
+        setPanel((current) => (current === 'timeline' ? null : 'timeline'));
       }}
       aria-pressed={timelineOpen}
       aria-label="Timeline"
@@ -448,6 +453,26 @@ export function AppShell({
     >
       <History className="size-3.5" />
       <span className={secondaryLabel}>Timeline</span>
+    </button>
+  );
+
+  const gitButton = selected?.git && (
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false);
+        setPanel((current) => (current === 'git' ? null : 'git'));
+      }}
+      aria-pressed={panel === 'git'}
+      aria-label="Changes"
+      title={`${selected.git.branch ?? 'detached'} · ${selected.git.dirty} changed`}
+      className={cn(HEADER_BUTTON, 'hover:border-accent-dim hover:text-accent')}
+    >
+      <GitBranch className="size-3.5" />
+      <span className={secondaryLabel}>Changes</span>
+      {selected.git.dirty > 0 && (
+        <span className="rounded bg-status-waiting/20 px-1 tabular-nums text-status-waiting">{selected.git.dirty}</span>
+      )}
     </button>
   );
 
@@ -671,6 +696,7 @@ export function AppShell({
                       />
                       <div className="absolute right-2 top-full z-40 mt-1 flex w-max flex-col items-stretch gap-1.5 rounded-lg border border-base-700 bg-base-900 p-2 shadow-2xl">
                         {timelineButton}
+                        {gitButton}
                         {exportMenu}
                         {muteButton}
                         {pinButton}
@@ -704,6 +730,7 @@ export function AppShell({
                     })}
                   </div>
                   {timelineButton}
+                  {gitButton}
                   {exportMenu}
                   {muteButton}
                   {pinButton}
@@ -726,8 +753,9 @@ export function AppShell({
 
         <div className="relative min-h-0 flex-1">
           {timelineOpen && selected && (
-            <TimelinePanel session={selected} now={now} onClose={() => setTimelineOpen(false)} />
+            <TimelinePanel session={selected} now={now} onClose={() => setPanel(null)} />
           )}
+          {panel === 'git' && selected && <GitPanel session={selected} onClose={() => setPanel(null)} />}
           <div
             className={cn(
               'grid h-full min-h-0 gap-px bg-base-800',

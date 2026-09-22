@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { SessionManager } from '../session/manager.js';
 import { expandPath } from './fs.js';
+import { readGitDiff, readGitStatus } from '../git/status.js';
 
 /** An `Error` carrying the HTTP status the central middleware should use. */
 export interface HttpError extends Error {
@@ -106,6 +107,37 @@ export function sessionsRouter(manager: SessionManager): Router {
     res.setHeader('content-type', 'application/x-asciicast');
     res.setHeader('content-disposition', `attachment; filename="${name}.cast"`);
     res.send(session.toCast());
+  });
+
+  /** Branch and changed files of the session's folder. */
+  router.get('/:id/git', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    void readGitStatus(session.info.cwd).then((status) => {
+      if (!status) return res.json({ repo: false, branch: null, ahead: 0, behind: 0, files: [] });
+      // Reading the status is a cheap moment to refresh the sidebar summary too.
+      manager.refreshGit(session, 0);
+      res.json({ repo: true, ...status });
+    }, next);
+  });
+
+  /**
+   * Diff of one changed file. The path must appear in the current status, so
+   * this can never be used to read arbitrary files on disk.
+   */
+  router.get('/:id/git/diff', (req, res, next) => {
+    const id = req.params.id ?? '';
+    const session = manager.get(id);
+    if (!session) return next(httpError(404, `Unknown session "${id}"`));
+    const path = typeof req.query['path'] === 'string' ? req.query['path'] : '';
+    void readGitStatus(session.info.cwd)
+      .then(async (status) => {
+        const file = status?.files.find((f) => f.path === path);
+        if (!file) return next(httpError(404, `"${path}" has no changes`));
+        res.json(await readGitDiff(session.info.cwd, file));
+      })
+      .catch(next);
   });
 
   /** Status history for the timeline view, oldest first. */

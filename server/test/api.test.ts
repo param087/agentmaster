@@ -229,6 +229,51 @@ describe('GET /api/sessions/:id/export.cast', () => {
   }, PTY_TIMEOUT);
 });
 
+describe('git routes', () => {
+  it('lists changes, diffs a changed file, and refuses paths not in the status', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'am-api-git-'));
+    try {
+      const { execFileSync } = await import('node:child_process');
+      const { writeFileSync } = await import('node:fs');
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+      const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, env });
+      run('init', '-q', '-b', 'feat');
+      writeFileSync(join(dir, 'a.txt'), 'old\n');
+      run('add', '.');
+      run('commit', '-qm', 'init');
+      writeFileSync(join(dir, 'a.txt'), 'new\n');
+
+      const base = await boot();
+      const session = await createSession(base, dir);
+
+      const status = (await (await fetch(`${base}/api/sessions/${session.id}/git`)).json()) as {
+        repo: boolean;
+        branch: string;
+        files: Array<{ path: string }>;
+      };
+      expect(status).toMatchObject({ repo: true, branch: 'feat', files: [{ path: 'a.txt', code: ' M' }] });
+
+      const diff = (await (await fetch(`${base}/api/sessions/${session.id}/git/diff?path=a.txt`)).json()) as { diff: string };
+      expect(diff.diff).toContain('+new');
+
+      const outside = await fetch(`${base}/api/sessions/${session.id}/git/diff?path=${encodeURIComponent('../../etc/passwd')}`);
+      expect(outside.status).toBe(404);
+
+      await waitFor(() => manager!.get(session.id)!.info.git?.dirty === 1);
+      expect(manager!.get(session.id)!.info.git).toMatchObject({ branch: 'feat', dirty: 1 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, PTY_TIMEOUT);
+
+  it('reports repo: false outside a repository', async () => {
+    const base = await boot();
+    const session = await createSession(base, tmpdir());
+    const status = (await (await fetch(`${base}/api/sessions/${session.id}/git`)).json()) as { repo: boolean };
+    expect(status.repo).toBe(false);
+  }, PTY_TIMEOUT);
+});
+
 describe('GET /api/sessions/:id/events', () => {
   it('returns the status history, oldest first', async () => {
     const base = await boot();

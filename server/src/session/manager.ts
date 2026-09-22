@@ -13,6 +13,7 @@ import {
   type Session,
 } from '../status/types.js';
 import { isMuted, shouldPush } from '../notify/policy.js';
+import { readGitStatus } from '../git/status.js';
 import { PtySession } from './session.js';
 import { formatPrompt } from '../../../shared/prompt.js';
 
@@ -35,6 +36,8 @@ const NOTIFY_COOLDOWN_MS = 30_000;
 const DEFAULT_PUSH_KINDS: readonly NotifyKind[] = ['waiting', 'error'];
 
 const NOTIFY_PREFS_KEY = 'notify';
+/** Coalesces the git re-read after a burst of status changes. */
+const GIT_REFRESH_DEBOUNCE_MS = 750;
 /** Browsers render at most two notification buttons. */
 const MAX_NOTIFICATION_ACTIONS = 2;
 /** Preview lines appended to a waiting notification, so it reads without opening. */
@@ -175,6 +178,7 @@ export class SessionManager {
     });
 
     if (input.initialPrompt?.trim()) this.queueInitialPrompt(session, input.initialPrompt);
+    this.refreshGit(session);
 
     emitServerEvent({ t: 'session:created', session: session.info });
     return session.info;
@@ -288,6 +292,9 @@ export class SessionManager {
     const session = this.map.get(id);
     if (!session) return;
     this.map.delete(id);
+    const gitTimer = this.gitTimers.get(id);
+    if (gitTimer) clearTimeout(gitTimer);
+    this.gitTimers.delete(id);
     session.kill();
     session.dispose();
     this.clearNotifyState(id);
@@ -321,6 +328,33 @@ export class SessionManager {
     this.db.insertEvent(session.id, snapshot.status, snapshot.waitKind ?? null, snapshot.at);
     emitServerEvent({ t: 'session:updated', session: session.info });
     this.maybeNotify(session, snapshot);
+    // A turn just ended: the moment files are most likely to have changed.
+    if (snapshot.status !== 'busy') this.refreshGit(session);
+  }
+
+  private readonly gitTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * Re-reads the git summary shortly after a change, coalescing bursts. Never
+   * throws; a folder that is not a repository simply has no summary.
+   */
+  refreshGit(session: PtySession, delayMs = GIT_REFRESH_DEBOUNCE_MS): void {
+    const pending = this.gitTimers.get(session.id);
+    if (pending) clearTimeout(pending);
+    const timer = setTimeout(() => {
+      this.gitTimers.delete(session.id);
+      void readGitStatus(session.info.cwd).then((status) => {
+        if (this.map.get(session.id) !== session) return;
+        const next = status
+          ? { branch: status.branch, dirty: status.files.length, ahead: status.ahead, behind: status.behind }
+          : undefined;
+        if (JSON.stringify(next) === JSON.stringify(session.info.git)) return;
+        session.info.git = next;
+        emitServerEvent({ t: 'session:updated', session: session.info });
+      });
+    }, delayMs);
+    timer.unref?.();
+    this.gitTimers.set(session.id, timer);
   }
 
   /** Rules as stored, falling back to AGENTMASTER_PUSH_KINDS for a fresh install. */

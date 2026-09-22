@@ -46,6 +46,8 @@ export interface Session {
   matchedRule?: string;
   pid?: number;
   exitCode?: number;
+  /** Git summary of `cwd`, absent when it is not a repository. */
+  git?: GitSummary;
   /** Rendered screen tail captured when the session started waiting or finished. */
   preview?: string;
   createdAt: number;
@@ -105,4 +107,21 @@ export interface NotifyPrefs {
   pushKinds: NotifyKind[];
   quietHours: QuietHours | null;
   mutedHarnesses: string[];
+}
+
+export interface GitSummary {
+  branch: string | null;
+  /** Changed + untracked files. */
+  dirty: number;
+  ahead: number;
+  behind: number;
+}
+
+/** `GET /api/sessions/:id/git`. */
+export interface GitStatusResponse {
+  repo: boolean;
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  files: { path: string; code: string }[];
 }

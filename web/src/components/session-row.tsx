@@ -109,6 +109,15 @@ export function SessionRow({
         </span>
         <span className="block truncate text-[11px] text-base-400">
           {session.harnessName} · {formatElapsed(session.statusChangedAt, now)}
+          {session.git?.branch && (
+            <>
+              {' · '}
+              <span title={`${session.git.dirty} changed file${session.git.dirty === 1 ? '' : 's'}`}>
+                {session.git.branch}
+                {session.git.dirty > 0 && <span className="text-status-waiting"> ●{session.git.dirty}</span>}
+              </span>
+            </>
+          )}
           {kindLabel !== null && (
             <>
               {' · '}
