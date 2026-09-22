@@ -43,8 +43,13 @@ const INLINE_FLAGS = /^\(\?([im]+)\)/;
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** Default location of the registry: `harnesses.yaml` beside the server package. */
-export const DEFAULT_HARNESSES_PATH = resolve(packageRoot, '..', 'harnesses.yaml');
+/**
+ * Default location of the registry: `harnesses.yaml` beside the server package.
+ * `AGENTMASTER_HARNESSES` overrides it, which is how the e2e suite gets a
+ * plain `bash` harness without touching the real registry.
+ */
+export const DEFAULT_HARNESSES_PATH =
+  process.env['AGENTMASTER_HARNESSES'] ?? resolve(packageRoot, '..', 'harnesses.yaml');
 
 /**
  * Compiles a YAML `match` / `busy_marker` string into a RegExp.

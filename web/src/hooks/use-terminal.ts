@@ -131,6 +131,47 @@ export interface TerminalDims {
   rows: number;
 }
 
+/**
+ * Read-only terminal probe for the e2e suite, enabled by `localStorage.e2e`.
+ *
+ * The WebGL renderer paints to a canvas, so there is no DOM text to assert on;
+ * this exposes the buffer instead. Never enabled for real users.
+ */
+interface TerminalProbe {
+  text: () => string;
+  viewportY: () => number;
+  baseY: () => number;
+  bufferType: () => string;
+}
+
+function exposeForTests(term: Terminal): () => void {
+  let enabled = false;
+  try {
+    enabled = window.localStorage.getItem('e2e') === '1';
+  } catch {
+    return () => {};
+  }
+  if (!enabled) return () => {};
+  const probe: TerminalProbe = {
+    text: () => {
+      const buffer = term.buffer.active;
+      const lines: string[] = [];
+      for (let i = 0; i < buffer.length; i += 1) {
+        lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+      }
+      return lines.join('\n');
+    },
+    viewportY: () => term.buffer.active.viewportY,
+    baseY: () => term.buffer.active.baseY,
+    bufferType: () => term.buffer.active.type,
+  };
+  const host = window as unknown as { __term?: TerminalProbe };
+  host.__term = probe;
+  return () => {
+    if (host.__term === probe) delete host.__term;
+  };
+}
+
 function terminalUrl(sessionId: string, dims: TerminalDims | null): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${scheme}://${window.location.host}/ws/term/${encodeURIComponent(sessionId)}`;
@@ -194,6 +235,7 @@ export function useTerminal(
 
     term.open(container);
     termRef.current = term;
+    const unexpose = exposeForTests(term);
 
     // ---- scroll position tracking ----------------------------------------
     //
@@ -370,6 +412,7 @@ export function useTerminal(
       writeListener.dispose();
       bufferListener.dispose();
       webgl?.dispose();
+      unexpose();
       termRef.current = null;
       // Leaking a terminal leaks a WebGL context and a canvas; twenty session
       // switches would exhaust the browser's context pool.

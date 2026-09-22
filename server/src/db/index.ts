@@ -125,7 +125,7 @@ function toPushSubscriptionRow(r: PushSubscriptionRecord): PushSubscriptionRow {
 }
 
 function defaultDbPath(): string {
-  return join(homedir(), '.agentmaster', 'db.sqlite');
+  return process.env['AGENTMASTER_DB'] ?? join(homedir(), '.agentmaster', 'db.sqlite');
 }
 
 function toSessionRow(r: SessionRecord): SessionRow {

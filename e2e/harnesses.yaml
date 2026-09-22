@@ -1,0 +1,7 @@
+# Registry for the e2e suite only: a plain shell, so tests drive a real PTY
+# without needing any AI CLI installed.
+harnesses:
+  - id: bash
+    name: Bash
+    command: /bin/bash
+    args: ["--norc", "--noprofile", "-i"]
