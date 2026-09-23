@@ -29,6 +29,9 @@ harnesses:
   - id: opencode
     name: opencode
     command: opencode
+    # Measured: opencode 1.18.32 takes ~7.5s to paint its startup TUI, so the
+    # 4s default turned every fresh session green before you had typed anything.
+    finished_after_busy_ms: 12000
     waiting_input:
       - match: "↑↓ select\\s+enter submit"
         kind: menu
@@ -70,6 +73,13 @@ harnesses:
         kind: question
       - match: "❯ \\d+\\. "
         kind: menu
+      # VERIFIED against Claude Code (folder-trust dialog): its options are not
+      # numbered ("❯ No, exit"), but every Claude selection dialog draws this footer.
+      - match: "Enter to confirm · Esc to cancel"
+        kind: menu
+        actions:
+          - { label: "Confirm", keys: "\r" }
+          - { label: "Cancel", keys: "\u001b" }
 
   # UNVERIFIED — gemini is not installed on this machine.
   # The wording is "Allow execution of '<command>'?", not a bare

@@ -16,3 +16,31 @@ export function formatPrompt(text: string, bracketedPaste: boolean): string {
   if (bracketedPaste) return `${PASTE_START}${normalized}${PASTE_END}\r`;
   return `${normalized.split('\n').join('\r')}\r`;
 }
+
+/**
+ * Delay between the prompt text and the Enter that submits it.
+ *
+ * Measured against Claude Code 2.1: text and CR arriving in one write are read
+ * as a paste, and the CR is kept as a literal newline instead of submitting.
+ * A short gap makes the Enter a separate keypress, as it is when typed.
+ */
+export const SUBMIT_DELAY_MS = 100;
+
+/** The prompt split into what to type and the Enter that submits it. */
+export function promptParts(text: string, bracketedPaste: boolean): { body: string; submit: string } {
+  const full = formatPrompt(text, bracketedPaste);
+  return { body: full.slice(0, -1), submit: '\r' };
+}
+
+/** Types the prompt, then presses Enter as a separate write after {@link SUBMIT_DELAY_MS}. */
+export function sendPrompt(
+  write: (data: string) => void | Promise<unknown>,
+  text: string,
+  bracketedPaste: boolean,
+): Promise<void> {
+  const { body, submit } = promptParts(text, bracketedPaste);
+  return Promise.resolve(write(body))
+    .then(() => new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS)))
+    .then(() => write(submit))
+    .then(() => undefined);
+}

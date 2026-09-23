@@ -85,7 +85,8 @@ export interface Db {
   getSession(id: string): SessionRow | undefined;
   listSessions(limit?: number): SessionRow[];
   listEvents(sessionId: string, limit?: number): EventRow[];
-  closeOrphanedSessions(at?: number): number;
+  /** Closes open rows, except `keep` (sessions re-attached this boot). */
+  closeOrphanedSessions(at?: number, keep?: ReadonlySet<string>): number;
   removeSession(id: string): void;
 
   /** Upsert by endpoint: re-subscribing refreshes the keys and clears failures. */
@@ -373,8 +374,17 @@ export function openDb(path?: string): Db {
     listEvents(sessionId, limit = DEFAULT_EVENT_LIMIT) {
       return (stmts.listEvents.all(sessionId, limit) as EventRecord[]).map(toEventRow);
     },
-    closeOrphanedSessions(at = Date.now()) {
-      return stmts.closeOrphaned.run(at).changes;
+    closeOrphanedSessions(at = Date.now(), keep = new Set<string>()) {
+      if (keep.size === 0) return stmts.closeOrphaned.run(at).changes;
+      const close = sqlite.transaction(() => {
+        let changes = 0;
+        for (const row of stmts.listOpen.all() as SessionRecord[]) {
+          if (keep.has(row.id)) continue;
+          changes += stmts.markExited.run(at, null, row.id).changes;
+        }
+        return changes;
+      });
+      return close();
     },
     removeSession(id) {
       stmts.removeSession.run(id);

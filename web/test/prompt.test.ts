@@ -13,3 +13,14 @@ describe('formatPrompt', () => {
     expect(formatPrompt('a\nb', false)).toBe('a\rb\r');
   });
 });
+
+describe('sendPrompt', () => {
+  it('writes the text, then Enter separately after a delay', async () => {
+    const { sendPrompt, SUBMIT_DELAY_MS } = await import('../src/lib/prompt');
+    const writes: Array<[string, number]> = [];
+    const t0 = Date.now();
+    await sendPrompt((d) => void writes.push([d, Date.now() - t0]), 'hello', true);
+    expect(writes.map(([d]) => d)).toEqual(['hello', '\r']);
+    expect(writes[1]![1]).toBeGreaterThanOrEqual(SUBMIT_DELAY_MS - 5);
+  });
+});

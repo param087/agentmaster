@@ -108,6 +108,35 @@ describe.skipIf(!available)('tmux backend', () => {
     expect(s2!.info.status).not.toBe('killed');
   }, TIMEOUT);
 
+  it('survives two restarts in a row', async () => {
+    dbFile = join(dir, 'twice.sqlite');
+    const first = boot();
+    const info = first.create({ harnessId: harness.id, cwd: tmpdir() });
+    await waitFor(() => first.get(info.id)!.replay().length > 0);
+    stop(first);
+    const second = boot();
+    expect(second.get(info.id)).toBeDefined();
+    expect(second.database.getSession(info.id)?.exitedAt).toBeNull();
+    stop(second);
+    const third = boot();
+    expect(third.get(info.id)).toBeDefined();
+  }, TIMEOUT);
+
+  it('restores scrollback that scrolled off the visible screen', async () => {
+    dbFile = join(dir, 'history.sqlite');
+    const first = boot();
+    const info = first.create({ harnessId: harness.id, cwd: tmpdir() });
+    const s1 = first.get(info.id)!;
+    await waitFor(() => s1.replay().toString('utf8').includes('$'));
+    s1.write('for i in $(seq 1 80); do echo hist-$i; done\r');
+    await waitFor(() => s1.replay().toString('utf8').includes('hist-80'));
+    stop(first);
+
+    const second = boot();
+    // hist-1 is far above a 32-row screen: only capture-pane can bring it back.
+    expect(second.get(info.id)!.replay().toString('utf8')).toContain('hist-1\r\n');
+  }, TIMEOUT);
+
   it('Delete ends the tmux session and erases the row, so it never comes back', async () => {
     dbFile = join(dir, 'delete.sqlite');
     const first = boot();
