@@ -8,3 +8,6 @@ web/tsconfig.tsbuildinfo
 e2e/.tmp/
 test-results/
 playwright-report/
+.opencode/
+.env
+.env.*
